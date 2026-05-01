@@ -8,7 +8,8 @@ import { MasStore } from "./storage.js";
 import type { PermissionDecision, PermissionRequestInput, StreamSink, ToolEventInput } from "./types.js";
 
 async function main(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
+  const [rawCommand, ...rawArgs] = process.argv.slice(2);
+  const [command, args] = normalizeCommand(rawCommand, rawArgs);
   const flags = parseFlags(args);
   const approvalMode = MasRunner.approvalModeFromFlags({
     approveAll: flags.has("approve-all"),
@@ -144,10 +145,16 @@ function printHelp(): void {
 
 用法：
   mas acp [--approve-all] [--max-iterations 3]
+  mas --experimental-acp [--approve-all] [--max-iterations 3]
   mas run <task> [--cwd <dir>] [--approve-all] [--deny-writes]
   mas status [--limit 20]
   mas doctor
 `);
+}
+
+function normalizeCommand(command: string | undefined, args: string[]): [string | undefined, string[]] {
+  if (command === "--experimental-acp") return ["acp", args];
+  return [command, args];
 }
 
 main().catch((error) => {
