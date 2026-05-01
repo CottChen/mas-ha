@@ -125,12 +125,12 @@ npm run doctor
 
 当前约定的长期 worktree：
 
-| 方向 | 分支 | 目录 | 默认端口/别名 |
-| --- | --- | --- | --- |
-| ACP 集成，接入 AionUI | `feature/acp-aionui` | `/home/admin/mas-impl-acp-aionui` | `MAS_DEV_PORT=4111`, `MAS_ALIAS=mas-acp` |
-| Ego+Superego、HA+Ego 模式 | `feature/orchestration-modes` | `/home/admin/mas-impl-orchestration` | `MAS_DEV_PORT=4112`, `MAS_ALIAS=mas-orch` |
-| 通信组件、版本追溯 | `feature/comm-versioning` | `/home/admin/mas-impl-comm-versioning` | `MAS_DEV_PORT=4113`, `MAS_ALIAS=mas-comm` |
-| 记忆组件 | `feature/memory` | `/home/admin/mas-impl-memory` | `MAS_DEV_PORT=4114`, `MAS_ALIAS=mas-memory` |
+| 方向 | 人员 | 分支 | 目录 | 默认端口/别名 |
+| --- | --- | --- | --- | --- |
+| ACP 集成，接入 AionUI，通过AionUI直接调用HA | tao | `feature/acp-aionui` | `/home/admin/mas-impl-acp-aionui` | `MAS_DEV_PORT=4111`, `MAS_ALIAS=mas-acp` |
+| Ego+Superego、HA+Ego 模式 |  | `feature/orchestration-modes` | `/home/admin/mas-impl-orchestration` | `MAS_DEV_PORT=4112`, `MAS_ALIAS=mas-orch` |
+| 通信组件、版本追溯，让HA能够使用 | wen | `feature/comm-versioning` | `/home/admin/mas-impl-comm-versioning` | `MAS_DEV_PORT=4113`, `MAS_ALIAS=mas-comm` |
+| 记忆组件 | `feature/memory` | jie | `/home/admin/mas-impl-memory` | `MAS_DEV_PORT=4114`, `MAS_ALIAS=mas-memory` |
 
 每个 worktree 根目录应保留本地 `.env.local`，用于端口、别名和本地运行差异配置。`.env.local` 不入库。
 
