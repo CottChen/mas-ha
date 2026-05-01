@@ -130,7 +130,7 @@ npm run doctor
 | ACP 集成，接入 AionUI，通过AionUI直接调用HA | tao | `feature/acp-aionui` | `/home/admin/mas-impl-acp-aionui` | `MAS_DEV_PORT=4111`, `MAS_ALIAS=mas-acp` |
 | Ego+Superego、HA+Ego 模式 |  | `feature/orchestration-modes` | `/home/admin/mas-impl-orchestration` | `MAS_DEV_PORT=4112`, `MAS_ALIAS=mas-orch` |
 | 通信组件、版本追溯，让HA能够使用 | wen | `feature/comm-versioning` | `/home/admin/mas-impl-comm-versioning` | `MAS_DEV_PORT=4113`, `MAS_ALIAS=mas-comm` |
-| 记忆组件 | jie | `feature/memory` | `/home/admin/mas-impl-memory` | `MAS_DEV_PORT=4114`, `MAS_ALIAS=mas-memory` |
+| 记忆组件，让HA能够使用 | jie | `feature/memory` | `/home/admin/mas-impl-memory` | `MAS_DEV_PORT=4114`, `MAS_ALIAS=mas-memory` |
 
 每个 worktree 根目录应保留本地 `.env.local`，用于端口、别名和本地运行差异配置。`.env.local` 不入库。
 
