@@ -107,3 +107,50 @@ npm run doctor
 - 权限策略必须默认保守：读自动，写和命令需审批。
 - 对用户工作区的写入和命令执行必须能审计，至少记录 runId、toolCallId、toolName、decision 和 rawInput。
 - 新增长期规划、架构演进、阶段目标时写入 `docs/ROADMAP.md`，不要塞进 `AGENTS.md`。
+
+## 多人协作与 Git 约束
+
+- 采用 GitHub 托管，远程仓库为 `git@github.com:CottChen/mas-ha.git`。
+- 默认基线分支为 `main`，功能开发必须从 `main` 切出独立分支，不直接在 `main` 上开发。
+- 每个方向使用独立 worktree，避免多人/多代理在同一目录互相覆盖。
+- 每个 worktree 只能修改自己方向相关文件；跨方向公共接口变更必须先在 PR 或 issue 中说明影响面。
+- 禁止提交 `node_modules/`、`.env*`、`~/.mas/`、日志、密钥和本地运行产物。
+- 合并前必须至少运行 `npm run typecheck` 和 `npm run doctor`；涉及 ACP 的变更还要跑 ACP handshake smoke test。
+- 提交信息使用简短英文祈使句，例如 `Improve ACP session lifecycle`。
+- PR 描述必须包含：目标、主要改动、测试结果、风险和回滚方式。
+- 多人并行时优先小步提交、小 PR；避免长时间分支漂移。
+- 如出现冲突，保留用户或其他协作者已提交的改动，不使用破坏性命令回滚他人工作。
+
+## Worktree 分工
+
+当前约定的长期 worktree：
+
+| 方向 | 分支 | 目录 | 默认端口/别名 |
+| --- | --- | --- | --- |
+| ACP 集成，接入 AionUI | `feature/acp-aionui` | `/home/admin/mas-impl-acp-aionui` | `MAS_DEV_PORT=4111`, `MAS_ALIAS=mas-acp` |
+| Ego+Superego、HA+Ego 模式 | `feature/orchestration-modes` | `/home/admin/mas-impl-orchestration` | `MAS_DEV_PORT=4112`, `MAS_ALIAS=mas-orch` |
+| 通信组件、版本追溯 | `feature/comm-versioning` | `/home/admin/mas-impl-comm-versioning` | `MAS_DEV_PORT=4113`, `MAS_ALIAS=mas-comm` |
+| 记忆组件 | `feature/memory` | `/home/admin/mas-impl-memory` | `MAS_DEV_PORT=4114`, `MAS_ALIAS=mas-memory` |
+
+每个 worktree 根目录应保留本地 `.env.local`，用于端口、别名和本地运行差异配置。`.env.local` 不入库。
+
+`.env.local` 推荐字段：
+
+```bash
+MAS_WORKTREE=<方向标识>
+MAS_ALIAS=<本地别名>
+MAS_DEV_PORT=<唯一端口>
+MAS_ACP_PORT=<唯一端口，如未来引入 HTTP/WebSocket ACP 调试服务>
+MAS_HOME=<隔离的本地数据目录>
+```
+
+端口分配必须唯一。新增 worktree 时从 `4120` 以后递增，避免和既有四个方向冲突。
+
+## 各方向边界
+
+- `feature/acp-aionui`：只负责 ACP 协议兼容、AionUI 自定义 Agent 接入、权限事件、session/update 映射和端到端 smoke test。
+- `feature/orchestration-modes`：只负责 HA/Ego/Superego 状态机、模式切换、返工策略、验收合同和编排测试。
+- `feature/comm-versioning`：只负责内部事件、通信抽象、版本追溯、审计链路、工件版本和回放接口。
+- `feature/memory`：只负责短期/长期记忆、失败模式沉淀、检索增强和记忆隔离策略。
+
+公共类型、CLI 参数、存储 schema、权限模型属于共享边界；改动前必须考虑其他 worktree 的兼容性。
