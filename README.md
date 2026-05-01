@@ -20,6 +20,12 @@ npm run doctor
 /home/admin/mas-impl/bin/mas acp
 ```
 
+部分 AionUI 版本会给自定义 ACP Agent 追加 `--experimental-acp` 参数，MAS 已兼容以下启动形式：
+
+```bash
+/home/admin/mas-impl/bin/mas --experimental-acp
+```
+
 默认权限策略是读操作自动通过，写文件、编辑文件和执行命令会向 AionUI 发起 `session/request_permission`。
 
 如需高自主模式：
@@ -27,6 +33,8 @@ npm run doctor
 ```bash
 /home/admin/mas-impl/bin/mas acp --approve-all
 ```
+
+完整接入、验证、日志排查和模型配置见 [AionUI 接入与模型配置](docs/AIONUI.md)。
 
 ## Pi 依赖
 

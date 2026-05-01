@@ -106,8 +106,12 @@ function sessionResponse(sessionId: string): Record<string, unknown> {
     ],
     configOptions: [],
     models: {
-      currentModelId: "pi-default",
-      availableModels: [{ id: "pi-default", name: "Pi 默认模型" }],
+      currentModelId: "dashscope-anthropic/qwen3.6-plus",
+      availableModels: [
+        { id: "dashscope-anthropic/qwen3.6-plus", name: "DashScope qwen3.6-plus" },
+        { id: "dashscope-anthropic/kimi-k2.5", name: "DashScope kimi-k2.5" },
+        { id: "dashscope-anthropic/qwen3.5-plus", name: "DashScope qwen3.5-plus" },
+      ],
     },
   };
 }

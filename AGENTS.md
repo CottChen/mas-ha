@@ -1,5 +1,8 @@
 # Codex 项目指令
 
+## AGENTS.md 的约束
+- `AGENTS.md` 必须保持简洁，只记录长期有效的项目规则和关键经验；具体操作步骤、排查细节和配置示例应写入 `docs/` 下的专门文档。
+
 ## 语言要求
 
 - 所有文档、注释、说明和最终输出必须使用简体中文。
@@ -89,6 +92,14 @@ npm run doctor
 
 默认模式下，MAS 会通过 ACP `session/request_permission` 向 AionUI 请求写文件、编辑文件和执行命令审批。
 
+部分 AionUI 版本在启动自定义 ACP Agent 时会追加 `--experimental-acp` 参数。MAS 必须兼容以下入口，避免 `CLI found but ACP initialization failed.`：
+
+```bash
+/home/admin/mas-impl/bin/mas --experimental-acp
+```
+
+如果 AionUI 识别失败，先查 `~/.config/AionUi/logs/`，再跑 ACP handshake smoke test。不要直接修改 AionUI 运行时配置文件来注入 agent，可能被 AionUI 回写覆盖。详细接入、日志排查、handshake 和模型验证步骤见 `docs/AIONUI.md`。
+
 ## 关键约束
 
 - 不要依赖全局 `pi` 命令；当前项目通过公共 npm 包 `@mariozechner/pi-coding-agent` 集成。
@@ -98,6 +109,10 @@ npm run doctor
 - `node:sqlite` 当前是实验特性，看到 experimental warning 不代表失败。
 - 真实 prompt 执行依赖 Pi 的模型认证和 API key；测试时避免无意触发高权限工具调用。
 - 推送 GitHub 需要本机凭据；当前远程是 `https://github.com/CottChen/mas-ha.git`。
+
+## Pi 模型配置经验
+
+Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。DashScope Anthropic 兼容 provider 约定为 `dashscope-anthropic`，默认模型为 `qwen3.6-plus`。真实 API key 只能写入本机用户目录、环境变量或密钥管理器，不能写进仓库、文档示例、日志或提交记录。AionUI 展示模型来自 ACP `session/new`，实际执行模型来自 Pi SDK 配置，两者要保持一致。详细配置和验证命令见 `docs/AIONUI.md`。
 
 ## 编码原则
 
