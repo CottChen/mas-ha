@@ -30,19 +30,13 @@ npm run doctor
 
 ## Pi 依赖
 
-当前 MVP 直接引用本机 Pi 源码：
-
-```text
-/home/admin/mas/pi-mono
-```
-
-需要先在 Pi monorepo 中完成依赖安装和构建：
+当前 MVP 使用公共 npm 包：
 
 ```bash
-cd /home/admin/mas/pi-mono
-npm install
-npm run build
+npm install @mariozechner/pi-coding-agent
 ```
+
+不依赖全局 `pi` 命令，也不依赖本机 Pi 源码目录。
 
 ## 当前范围
 

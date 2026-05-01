@@ -1,6 +1,3 @@
-import { pathToFileURL } from "node:url";
-import { join } from "node:path";
-import { PI_MONO_ROOT } from "../config.js";
 import type { ApprovalMode, PermissionDecision, StreamSink, ToolEventInput } from "../types.js";
 
 type PiModule = Record<string, any>;
@@ -9,8 +6,7 @@ let cachedPi: PiModule | undefined;
 
 export async function loadPiSdk(): Promise<PiModule> {
   if (cachedPi) return cachedPi;
-  const entry = pathToFileURL(join(PI_MONO_ROOT, "packages/coding-agent/src/index.ts")).href;
-  const pi = (await import(entry)) as PiModule;
+  const pi = (await import("@mariozechner/pi-coding-agent")) as PiModule;
   cachedPi = pi;
   return pi;
 }

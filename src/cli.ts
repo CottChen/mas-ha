@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { startAcpServer } from "./acp/server.js";
 import { MasRunner } from "./core/runner.js";
-import { AIONUI_BIN, PI_MONO_ROOT } from "./config.js";
+import { AIONUI_BIN } from "./config.js";
 import { loadPiSdk } from "./pi/pi-sdk.js";
 import { MasStore } from "./storage.js";
 import type { PermissionDecision, PermissionRequestInput, StreamSink, ToolEventInput } from "./types.js";
@@ -92,13 +91,7 @@ class ConsoleSink implements StreamSink {
 async function doctor(): Promise<void> {
   const checks: Array<[string, boolean, string]> = [];
   checks.push(["AionUI 二进制", existsSync(AIONUI_BIN), AIONUI_BIN]);
-  checks.push(["Pi monorepo", existsSync(PI_MONO_ROOT), PI_MONO_ROOT]);
-  checks.push(["Pi node_modules", existsSync(join(PI_MONO_ROOT, "node_modules")), join(PI_MONO_ROOT, "node_modules")]);
-  checks.push([
-    "Pi SDK 源码入口",
-    existsSync(join(PI_MONO_ROOT, "packages/coding-agent/src/index.ts")),
-    join(PI_MONO_ROOT, "packages/coding-agent/src/index.ts"),
-  ]);
+  checks.push(["Pi SDK 公共包", true, "@mariozechner/pi-coding-agent"]);
 
   let sdkOk = false;
   try {

@@ -25,7 +25,7 @@ MAS 是一个多智能体执行系统 MVP，目标是通过 ACP 协议接入 Aio
 - 入口执行：`tsx`。
 - 存储：Node 内置 `node:sqlite` 的 `DatabaseSync`，当前会触发 experimental warning，属于预期现象。
 - 外部 UI / 协议：AionUI + ACP JSON-RPC over stdio。
-- Agent 内核：`/home/admin/mas/pi-mono` 的 `@mariozechner/pi-coding-agent` 源码 SDK。
+- Agent 内核：公共 npm 包 `@mariozechner/pi-coding-agent`。
 
 ## 目录结构
 
@@ -39,14 +39,6 @@ MAS 是一个多智能体执行系统 MVP，目标是通过 ACP 协议接入 Aio
 - `docs/ROADMAP.md`：未来规划和路线图。
 
 ## 启动和验证命令
-
-首次准备 Pi 依赖：
-
-```bash
-cd /home/admin/mas/pi-mono
-npm install
-npm run build
-```
 
 准备 MAS：
 
@@ -99,8 +91,8 @@ npm run doctor
 
 ## 关键约束
 
-- 不要依赖全局 `pi` 命令；当前项目通过 Pi SDK 源码集成。
-- 修改 Pi 相关集成时，优先保持 `/home/admin/mas/pi-mono` 不被改动；除非任务明确要求修改 Pi 源码。
+- 不要依赖全局 `pi` 命令；当前项目通过公共 npm 包 `@mariozechner/pi-coding-agent` 集成。
+- 不要直接引用本机 Pi 源码目录；需要升级 Pi 时应调整 `package.json` 中的公共包版本并更新锁文件。
 - 不要提交 `node_modules/`、运行数据、日志或本地密钥。
 - 本地运行数据默认在 `~/.mas/`，不要把它迁移进仓库。
 - `node:sqlite` 当前是实验特性，看到 experimental warning 不代表失败。
