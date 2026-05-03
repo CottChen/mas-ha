@@ -1,5 +1,10 @@
 # Codex 项目指令
 
+## 开发环境检测
+
+- 开始执行项目命令前必须先判断当前运行环境；检测到 Windows 环境时，必须检查 Git Bash 是否已安装并优先使用 Git Bash 执行项目命令。
+- 如果 Windows 环境缺少 Git Bash，应先提示建议安装 Git Bash，再继续评估是否存在可接受的替代执行方式。
+
 ## AGENTS.md 的约束
 - `AGENTS.md` 必须保持简洁，只记录长期有效的项目规则和关键经验；具体操作步骤、排查细节和配置示例应写入 `docs/` 下的专门文档。
 
@@ -42,6 +47,8 @@ MAS 是一个多智能体执行系统 MVP，目标是通过 ACP 协议接入 Aio
 - `docs/ROADMAP.md`：未来规划和路线图。
 
 ## 启动和验证命令
+
+Windows 环境优先使用 Git Bash 执行项目命令；`bin/mas` 是 Bash 入口脚本，不按 PowerShell / CMD 原生命令假设。编辑 UTF-8 源码和 `~/.pi/agent/*.json` 时避免使用会写入 BOM 或改写编码的 PowerShell 默认写法，Pi 配置 JSON 必须保持无 BOM UTF-8。
 
 准备 MAS：
 

@@ -1,8 +1,6 @@
 #!/usr/bin/env node
-import { existsSync } from "node:fs";
 import { startAcpServer } from "./acp/server.js";
 import { MasRunner } from "./core/runner.js";
-import { AIONUI_BIN } from "./config.js";
 import { loadPiSdk } from "./pi/pi-sdk.js";
 import { MasStore } from "./storage.js";
 import type { PermissionDecision, PermissionRequestInput, StreamSink, ToolEventInput } from "./types.js";
@@ -91,7 +89,6 @@ class ConsoleSink implements StreamSink {
 
 async function doctor(): Promise<void> {
   const checks: Array<[string, boolean, string]> = [];
-  checks.push(["AionUI 二进制", existsSync(AIONUI_BIN), AIONUI_BIN]);
   checks.push(["Pi SDK 公共包", true, "@mariozechner/pi-coding-agent"]);
 
   let sdkOk = false;
