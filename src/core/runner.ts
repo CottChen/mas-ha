@@ -30,6 +30,7 @@ export class MasRunner {
       action: "run_started",
       payload: {
         cwd: options.cwd,
+        approvalMode: options.approvalMode,
         orchestrationMode: mode.id,
         historyTurns: options.conversationHistory?.length ?? 0,
         hasConversationSummary: Boolean(options.conversationSummary?.trim()),

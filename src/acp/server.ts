@@ -10,6 +10,7 @@ import type { ApprovalMode, ConversationContext, OrchestrationMode, SkillSummary
 type SessionState = {
   sessionId: string;
   cwd: string;
+  approvalMode: ApprovalMode;
   orchestrationMode: OrchestrationMode;
   context: ConversationContext;
   skills: SkillSummary[];
@@ -53,28 +54,31 @@ export function startAcpServer(options: AcpServerOptions): void {
   peer.on("session/new", async (params) => {
     const sessionId = `mas-${randomUUID()}`;
     const orchestrationMode = normalizeOrchestrationMode(params?.orchestrationMode ?? options.orchestrationMode);
+    const approvalMode = normalizeSessionApprovalMode(params, options.approvalMode);
     const cwd = normalizeCwd(params?.cwd);
     const skills = await safeDiscoverSkills(cwd);
-    sessions.set(sessionId, { sessionId, cwd, orchestrationMode, context: { summary: "", turns: [] }, skills });
-    queueSessionUpdates(peer, sessionId, { summary: "", turns: [] }, skills, orchestrationMode);
-    return sessionResponse(sessionId, orchestrationMode, skills);
+    sessions.set(sessionId, { sessionId, cwd, approvalMode, orchestrationMode, context: { summary: "", turns: [] }, skills });
+    queueSessionUpdates(peer, sessionId, { summary: "", turns: [] }, skills, approvalMode, orchestrationMode);
+    return sessionResponse(sessionId, approvalMode, orchestrationMode, skills);
   });
 
   peer.on("session/load", async (params) => {
     const sessionId = String(params?.sessionId ?? `mas-${randomUUID()}`);
     const orchestrationMode = normalizeOrchestrationMode(params?.orchestrationMode ?? options.orchestrationMode);
+    const approvalMode = normalizeSessionApprovalMode(params, options.approvalMode);
     const cwd = normalizeCwd(params?.cwd);
     const skills = await safeDiscoverSkills(cwd);
     const context = store.getConversationContext(sessionId);
     sessions.set(sessionId, {
       sessionId,
       cwd,
+      approvalMode,
       orchestrationMode,
       context,
       skills,
     });
-    queueSessionUpdates(peer, sessionId, context, skills, orchestrationMode);
-    return sessionResponse(sessionId, orchestrationMode, skills);
+    queueSessionUpdates(peer, sessionId, context, skills, approvalMode, orchestrationMode);
+    return sessionResponse(sessionId, approvalMode, orchestrationMode, skills);
   });
 
   peer.on("session/prompt", async (params) => {
@@ -108,7 +112,7 @@ export function startAcpServer(options: AcpServerOptions): void {
       prompt,
       {
         cwd: session.cwd,
-        approvalMode: options.approvalMode,
+        approvalMode: session.approvalMode,
         orchestrationMode: session.orchestrationMode,
         maxIterations: options.maxIterations,
         signal: abort.signal,
@@ -138,7 +142,13 @@ export function startAcpServer(options: AcpServerOptions): void {
     return {};
   });
 
-  peer.on("session/set_mode", () => ({}));
+  peer.on("session/set_mode", (params) => {
+    const session = sessions.get(String(params?.sessionId ?? ""));
+    if (!session) return {};
+    session.approvalMode = approvalModeFromAcpMode(params?.modeId ?? params?.id ?? params?.mode ?? params?.value, options.approvalMode);
+    queueModeUpdate(peer, session.sessionId, session.approvalMode);
+    return sessionResponse(session.sessionId, session.approvalMode, session.orchestrationMode, session.skills);
+  });
   peer.on("session/set_model", () => ({}));
   peer.on("session/set_config_option", (params) => {
     const session = sessions.get(String(params?.sessionId ?? ""));
@@ -146,20 +156,26 @@ export function startAcpServer(options: AcpServerOptions): void {
     const optionId = String(params?.optionId ?? params?.id ?? "");
     if (optionId === "orchestrationMode") {
       session.orchestrationMode = normalizeOrchestrationMode(params?.value);
-      queueConfigUpdate(peer, session.sessionId, session.orchestrationMode);
+      queueConfigUpdate(peer, session.sessionId, session.approvalMode, session.orchestrationMode);
     }
-    return sessionResponse(session.sessionId, session.orchestrationMode, session.skills);
+    return sessionResponse(session.sessionId, session.approvalMode, session.orchestrationMode, session.skills);
   });
   peer.start();
 }
 
-function sessionResponse(sessionId: string, orchestrationMode: OrchestrationMode, skills: SkillSummary[]): Record<string, unknown> {
+function sessionResponse(
+  sessionId: string,
+  approvalMode: ApprovalMode,
+  orchestrationMode: OrchestrationMode,
+  skills: SkillSummary[],
+): Record<string, unknown> {
   return {
     sessionId,
     modes: [
       { id: "default", name: "默认", description: "写文件和命令需要审批" },
       { id: "bypassPermissions", name: "免确认", description: "等价于 mas --approve-all" },
     ],
+    currentModeId: acpModeFromApprovalMode(approvalMode),
     configOptions: [
       {
         id: "orchestrationMode",
@@ -185,6 +201,23 @@ function sessionResponse(sessionId: string, orchestrationMode: OrchestrationMode
 
 function normalizeCwd(value: unknown): string {
   return typeof value === "string" && value.length > 0 ? value : process.cwd();
+}
+
+function normalizeSessionApprovalMode(params: unknown, fallback: ApprovalMode): ApprovalMode {
+  if (!params || typeof params !== "object") return fallback;
+  const input = params as Record<string, unknown>;
+  return approvalModeFromAcpMode(input.modeId ?? input.mode ?? input.currentModeId, fallback);
+}
+
+function approvalModeFromAcpMode(value: unknown, fallback: ApprovalMode): ApprovalMode {
+  if (value === "bypassPermissions" || value === "approve-all") return "approve-all";
+  if (value === "default" || value === "approve-reads") return "approve-reads";
+  if (value === "deny-writes") return "deny-writes";
+  return fallback;
+}
+
+function acpModeFromApprovalMode(approvalMode: ApprovalMode): string {
+  return approvalMode === "approve-all" ? "bypassPermissions" : "default";
 }
 
 function extractPrompt(value: unknown): string {
@@ -227,28 +260,33 @@ function queueSessionUpdates(
   sessionId: string,
   context: ConversationContext,
   skills: SkillSummary[],
+  approvalMode: ApprovalMode,
   orchestrationMode: OrchestrationMode,
 ): void {
   setTimeout(() => {
-    queueConfigUpdate(peer, sessionId, orchestrationMode);
+    queueConfigUpdate(peer, sessionId, approvalMode, orchestrationMode);
     queueAvailableCommands(peer, sessionId, skills);
     replayHistory(peer, sessionId, context);
   }, 0);
 }
 
-function queueConfigUpdate(peer: JsonRpcPeer, sessionId: string, orchestrationMode: OrchestrationMode): void {
+function queueConfigUpdate(peer: JsonRpcPeer, sessionId: string, approvalMode: ApprovalMode, orchestrationMode: OrchestrationMode): void {
   peer.notify("session/update", {
     sessionId,
     update: {
       sessionUpdate: "config_option_update",
-      configOptions: sessionResponse(sessionId, orchestrationMode, []).configOptions,
+      configOptions: sessionResponse(sessionId, approvalMode, orchestrationMode, []).configOptions,
     },
   });
+  queueModeUpdate(peer, sessionId, approvalMode);
+}
+
+function queueModeUpdate(peer: JsonRpcPeer, sessionId: string, approvalMode: ApprovalMode): void {
   peer.notify("session/update", {
     sessionId,
     update: {
       sessionUpdate: "current_mode_update",
-      currentModeId: "default",
+      currentModeId: acpModeFromApprovalMode(approvalMode),
     },
   });
 }

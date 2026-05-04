@@ -52,6 +52,8 @@ npm run doctor
 /home/admin/mas-impl/bin/mas acp --approve-all
 ```
 
+也可以在 AionUI 会话模式中切换到“免确认”/`bypassPermissions`；MAS 会通过 ACP `session/set_mode` 将该会话切换为等价的 `approve-all`。切回“默认”后，写文件、编辑文件和执行命令会重新请求审批。
+
 默认模式下，读操作自动通过；写文件、编辑文件和执行命令会通过 ACP `session/request_permission` 请求 AionUI 审批。
 
 ### AionUI 会话能力

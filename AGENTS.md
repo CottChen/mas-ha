@@ -132,6 +132,7 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - ACP 层只处理协议转换、会话生命周期和 AionUI 可展示事件，不放业务编排逻辑。
 - Pi 适配层只负责创建 Pi session、映射事件、拦截工具权限，不承担 HA / Ego / Superego 决策。
 - 编排逻辑放在 `src/core/`，保持状态机显式、可测试。
+- HA / Ego / Superego 的内部结构化输出应优先使用 Pi SDK typed tool，MAS 侧必须保留业务 schema 校验和 repair prompt 兜底。
 - 权限策略必须默认保守：读自动，写和命令需审批。
 - 对用户工作区的写入和命令执行必须能审计，至少记录 runId、toolCallId、toolName、decision 和 rawInput。
 - 新增长期规划、架构演进、阶段目标时写入 `docs/ROADMAP.md`，不要塞进 `AGENTS.md`。
