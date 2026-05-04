@@ -56,6 +56,20 @@ export interface CritiqueResult {
   }>;
 }
 
+export interface EgoResult {
+  status: "completed" | "needs_attention" | "blocked";
+  summary: string;
+  final_response: string;
+  evidence: string[];
+  changed_files: string[];
+  verification: Array<{
+    command: string;
+    result: "passed" | "failed" | "not_run";
+    notes: string;
+  }>;
+  risks: string[];
+}
+
 export interface HaDecision {
   next_action: "answer" | "execute" | "clarify";
   response: string;

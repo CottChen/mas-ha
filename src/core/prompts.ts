@@ -1,4 +1,4 @@
-import type { CritiqueResult, HaDecision } from "../types.js";
+import type { CritiqueResult, EgoResult, HaDecision } from "../types.js";
 
 const SHARED_AGENT_PRINCIPLES = [
   "共通原则：",
@@ -84,8 +84,35 @@ export function buildEgoPrompt(task: string, contract: string, critique?: Critiq
     parts.push("上一轮 Superego 批注如下，请针对阻塞问题返工：");
     parts.push(JSON.stringify(critique, null, 2));
   }
-  parts.push("请开始执行。");
+  parts.push(
+    "请开始执行。执行过程中可以使用工具；所有必要操作完成后，最终输出必须是严格 JSON，不要输出 Markdown 代码块。",
+    "最终 JSON 格式：",
+    '{"status":"completed","summary":"","final_response":"","evidence":[],"changed_files":[],"verification":[{"command":"","result":"passed","notes":""}],"risks":[]}',
+    "status 只能是 completed、needs_attention 或 blocked。",
+    "final_response 是最终给用户看的中文回复，必须能独立说明结果。",
+    "evidence 记录关键证据，例如读取了什么、修改了什么、验证了什么。",
+    "changed_files 只列出实际修改过的文件路径；没有则为空数组。",
+    "verification 每项必须包含 command、result、notes；result 只能是 passed、failed 或 not_run。",
+    "risks 记录剩余风险或无法验证事项；没有则为空数组。",
+  );
   return parts.join("\n\n");
+}
+
+export function buildEgoRepairPrompt(rawOutput: string, errorMessage: string): string {
+  return [
+    "上一条 Ego 最终输出没有通过 MAS 执行结果 JSON 校验。",
+    `错误：${errorMessage}`,
+    "",
+    "请把上一条执行结果重新改写为严格 JSON。不要继续执行工具，不要解释，不要输出 Markdown 代码块，不要输出普通文本。",
+    "JSON 格式：",
+    '{"status":"completed","summary":"","final_response":"","evidence":[],"changed_files":[],"verification":[{"command":"","result":"passed","notes":""}],"risks":[]}',
+    "status 只能是 completed、needs_attention 或 blocked。",
+    "verification.result 只能是 passed、failed 或 not_run。",
+    "如果无法确认已完成，status 使用 needs_attention 或 blocked，不要伪造成 completed。",
+    "",
+    "上一条输出：",
+    rawOutput.slice(-12000),
+  ].join("\n");
 }
 
 export function buildSuperegoPrompt(task: string, contract: string, egoOutput: string): string {
@@ -136,6 +163,12 @@ export function parseCritique(text: string): CritiqueResult {
   return validateCritique(parsed);
 }
 
+export function parseEgoResult(text: string): EgoResult {
+  const jsonText = extractJson(text, "Ego");
+  const parsed = JSON.parse(jsonText) as unknown;
+  return validateEgoResult(parsed);
+}
+
 export function parseHaDecision(text: string): HaDecision {
   const jsonText = extractJson(text, "HA");
   const parsed = JSON.parse(jsonText) as unknown;
@@ -166,6 +199,51 @@ function validateHaDecision(value: unknown): HaDecision {
     acceptance_contract: acceptanceContract,
     rationale,
   };
+}
+
+function validateEgoResult(value: unknown): EgoResult {
+  if (!value || typeof value !== "object") {
+    throw new Error("Ego JSON schema 校验失败：顶层必须是对象");
+  }
+  const parsed = value as Record<string, unknown>;
+  const status = parsed.status;
+  if (status !== "completed" && status !== "needs_attention" && status !== "blocked") {
+    throw new Error("Ego JSON schema 校验失败：status 必须是 completed、needs_attention 或 blocked");
+  }
+  const summary = requireString(parsed.summary, "summary");
+  const finalResponse = requireString(parsed.final_response, "final_response");
+  if (!finalResponse.trim()) {
+    throw new Error("Ego JSON schema 校验失败：final_response 不能为空");
+  }
+  const evidence = requireStringArray(parsed.evidence, "evidence");
+  const changedFiles = requireStringArray(parsed.changed_files, "changed_files");
+  if (!Array.isArray(parsed.verification)) {
+    throw new Error("Ego JSON schema 校验失败：verification 必须是数组");
+  }
+  const risks = requireStringArray(parsed.risks, "risks");
+  return {
+    status,
+    summary,
+    final_response: finalResponse,
+    evidence,
+    changed_files: changedFiles,
+    verification: parsed.verification.map((item, index) => validateVerification(item, index)),
+    risks,
+  };
+}
+
+function validateVerification(value: unknown, index: number): EgoResult["verification"][number] {
+  if (!value || typeof value !== "object") {
+    throw new Error(`Ego JSON schema 校验失败：verification[${index}] 必须是对象`);
+  }
+  const item = value as Record<string, unknown>;
+  const command = requireString(item.command, `verification[${index}].command`);
+  const result = item.result;
+  if (result !== "passed" && result !== "failed" && result !== "not_run") {
+    throw new Error(`Ego JSON schema 校验失败：verification[${index}].result 必须是 passed、failed 或 not_run`);
+  }
+  const notes = requireString(item.notes, `verification[${index}].notes`);
+  return { command, result, notes };
 }
 
 function validateCritique(value: unknown): CritiqueResult {
@@ -206,9 +284,21 @@ function validateCritiqueItem(value: unknown, index: number): CritiqueResult["cr
 
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string") {
-    throw new Error(`Superego JSON schema 校验失败：${field} 必须是字符串`);
+    throw new Error(`JSON schema 校验失败：${field} 必须是字符串`);
   }
   return value;
+}
+
+function requireStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`JSON schema 校验失败：${field} 必须是字符串数组`);
+  }
+  return value.map((item, index) => {
+    if (typeof item !== "string") {
+      throw new Error(`JSON schema 校验失败：${field}[${index}] 必须是字符串`);
+    }
+    return item;
+  });
 }
 
 function toFiniteNumber(value: unknown, field: string): number {
