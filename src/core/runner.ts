@@ -112,48 +112,7 @@ export class MasRunner {
         let reviewText = "";
         try {
           reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2)));
-          try {
-            critique = parseCritique(reviewText);
-          } catch (error) {
-            const firstError = error instanceof Error ? error : new Error(String(error));
-            this.store.addAgentRun({
-              runId,
-              role: "superego",
-              iteration,
-              status: "failed",
-              input: { prompt, task, contract, repair: false },
-              output: { text: reviewText, error: firstError.message },
-            });
-            this.store.audit({ runId, actor: "superego", action: "review_parse_failed", payload: { message: firstError.message } });
-            reviewText = await superego.prompt(buildSuperegoRepairPrompt(reviewText, firstError.message));
-            try {
-              critique = parseCritique(reviewText);
-            } catch (repairError) {
-              const err = repairError instanceof Error ? repairError : new Error(String(repairError));
-              this.store.addAgentRun({
-                runId,
-                role: "superego",
-                iteration,
-                status: "failed",
-                input: { prompt, task, contract, repair: true },
-                output: { text: reviewText, error: err.message },
-              });
-              this.store.audit({ runId, actor: "superego", action: "review_repair_failed", payload: { message: err.message } });
-              critique = {
-                blocking_issues: 1,
-                quality_score: 0,
-                summary: `Superego 评审 JSON 解析失败且自修复失败：${err.message}`,
-                next_action: "escalate",
-                critique_items: [
-                  {
-                    category: "schema",
-                    severity: "high",
-                    suggestion: "请检查 Superego 原始输出和提示词约束，确保 next_action 只使用 accept、revise 或 escalate。",
-                  },
-                ],
-              };
-            }
-          }
+          critique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration);
           this.store.addAgentRun({
             runId,
             role: "superego",
@@ -204,7 +163,7 @@ export class MasRunner {
     iteration: number,
   ): Promise<EgoResult> {
     try {
-      return parseEgoResult(rawOutput);
+      return this.parseStructuredOutput("ego_result", rawOutput, ego, parseEgoResult, "Ego");
     } catch (error) {
       const firstError = error instanceof Error ? error : new Error(String(error));
       this.store.addAgentRun({
@@ -216,9 +175,10 @@ export class MasRunner {
         output: { text: rawOutput, error: firstError.message },
       });
       this.store.audit({ runId, actor: "ego", action: "result_parse_failed", payload: { message: firstError.message } });
+      ego.clearStructuredOutput("ego_result");
       const repairText = await ego.prompt(buildEgoRepairPrompt(rawOutput, firstError.message));
       try {
-        return parseEgoResult(repairText);
+        return this.parseStructuredOutput("ego_result", repairText, ego, parseEgoResult, "Ego");
       } catch (repairError) {
         const err = repairError instanceof Error ? repairError : new Error(String(repairError));
         this.store.addAgentRun({
@@ -241,6 +201,73 @@ export class MasRunner {
         };
       }
     }
+  }
+
+  private async parseSuperegoWithRepair(
+    rawOutput: string,
+    superego: Awaited<ReturnType<typeof createPiSession>>,
+    prompt: string,
+    task: string,
+    contract: string,
+    runId: string,
+    iteration: number,
+  ): Promise<CritiqueResult> {
+    try {
+      return this.parseStructuredOutput("superego_review", rawOutput, superego, parseCritique, "Superego");
+    } catch (error) {
+      const firstError = error instanceof Error ? error : new Error(String(error));
+      this.store.addAgentRun({
+        runId,
+        role: "superego",
+        iteration,
+        status: "failed",
+        input: { prompt, task, contract, repair: false },
+        output: { text: rawOutput, error: firstError.message },
+      });
+      this.store.audit({ runId, actor: "superego", action: "review_parse_failed", payload: { message: firstError.message } });
+      superego.clearStructuredOutput("superego_review");
+      const repairText = await superego.prompt(buildSuperegoRepairPrompt(rawOutput, firstError.message));
+      try {
+        return this.parseStructuredOutput("superego_review", repairText, superego, parseCritique, "Superego");
+      } catch (repairError) {
+        const err = repairError instanceof Error ? repairError : new Error(String(repairError));
+        this.store.addAgentRun({
+          runId,
+          role: "superego",
+          iteration,
+          status: "failed",
+          input: { prompt, task, contract, repair: true },
+          output: { text: repairText, error: err.message },
+        });
+        this.store.audit({ runId, actor: "superego", action: "review_repair_failed", payload: { message: err.message } });
+        return {
+          blocking_issues: 1,
+          quality_score: 0,
+          summary: `Superego 评审结构化输出解析失败且自修复失败：${err.message}`,
+          next_action: "escalate",
+          critique_items: [
+            {
+              category: "schema",
+              severity: "high",
+              suggestion: "请检查 Superego 原始输出和 typed tool 调用，确保 superego_review 参数符合 CritiqueResult schema。",
+            },
+          ],
+        };
+      }
+    }
+  }
+
+  private parseStructuredOutput<T>(
+    toolName: string,
+    rawOutput: string,
+    session: Awaited<ReturnType<typeof createPiSession>>,
+    parseText: (text: string) => T,
+    source: string,
+  ): T {
+    const toolOutput = session.structuredOutput<T>(toolName);
+    if (toolOutput !== undefined) return parseText(JSON.stringify(toolOutput));
+    if (rawOutput.trim()) return parseText(rawOutput);
+    throw new Error(`${source} 未提交 ${toolName} 工具调用，也未输出可解析 JSON`);
   }
 
   static approvalModeFromFlags(flags: { approveAll?: boolean; denyWrites?: boolean }): ApprovalMode {
