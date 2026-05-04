@@ -98,6 +98,8 @@ export function buildSuperegoPrompt(task: string, contract: string, egoOutput: s
     "JSON 格式：",
     '{"blocking_issues":0,"quality_score":0.0,"summary":"","next_action":"accept","critique_items":[{"category":"","severity":"low","suggestion":""}]}',
     "next_action 只能是 accept、revise 或 escalate。",
+    "不要使用 answer、execute、clarify、pass、complete、approve、reject、retry 等其他动作名。",
+    "如果存在阻塞问题，next_action 必须是 revise 或 escalate，不能是 accept。",
     "critique_items 每一项必须包含 category、severity、suggestion；severity 只能是 low、medium 或 high。",
     "",
     `用户任务：${task}`,
@@ -106,6 +108,25 @@ export function buildSuperegoPrompt(task: string, contract: string, egoOutput: s
     "",
     "Ego 输出：",
     egoOutput.slice(-12000),
+  ].join("\n");
+}
+
+export function buildSuperegoRepairPrompt(rawOutput: string, errorMessage: string): string {
+  return [
+    "上一条 Superego 输出没有通过 MAS 评审 JSON 校验。",
+    `错误：${errorMessage}`,
+    "",
+    "请把上一条评审意图重新改写为严格 JSON。不要解释，不要输出 Markdown 代码块，不要输出普通文本。",
+    "JSON 格式：",
+    '{"blocking_issues":0,"quality_score":0.0,"summary":"","next_action":"accept","critique_items":[{"category":"","severity":"low","suggestion":""}]}',
+    "next_action 只能是 accept、revise 或 escalate。",
+    "如果原意是通过、approve、approved、pass、complete 或 ok，改写为 accept。",
+    "如果原意是返工、retry、fix、rework、needs_revision 或 reject，改写为 revise。",
+    "如果原意是阻塞、blocked、needs_attention 或需要人工介入，改写为 escalate。",
+    "如果存在阻塞问题，blocking_issues 必须大于 0，next_action 必须是 revise 或 escalate。",
+    "",
+    "上一条输出：",
+    rawOutput.slice(-8000),
   ].join("\n");
 }
 
@@ -155,7 +176,7 @@ function validateCritique(value: unknown): CritiqueResult {
   const blockingIssues = toFiniteNumber(parsed.blocking_issues, "blocking_issues");
   const qualityScore = toFiniteNumber(parsed.quality_score, "quality_score");
   const summary = requireString(parsed.summary, "summary");
-  const nextAction = requireNextAction(parsed.next_action);
+  const nextAction = normalizeNextAction(parsed.next_action, blockingIssues);
   if (!Array.isArray(parsed.critique_items)) {
     throw new Error("Superego JSON schema 校验失败：critique_items 必须是数组");
   }
@@ -197,8 +218,31 @@ function toFiniteNumber(value: unknown, field: string): number {
   return value;
 }
 
-function requireNextAction(value: unknown): CritiqueResult["next_action"] {
-  if (value === "accept" || value === "revise" || value === "escalate") return value;
+function normalizeNextAction(value: unknown, blockingIssues: number): CritiqueResult["next_action"] {
+  if (typeof value !== "string") {
+    throw new Error("Superego JSON schema 校验失败：next_action 必须是字符串");
+  }
+  const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  let action: CritiqueResult["next_action"] | undefined;
+  if (normalized === "accept" || normalized === "accepted" || normalized === "approve" || normalized === "approved") {
+    action = "accept";
+  }
+  if (normalized === "pass" || normalized === "passed" || normalized === "complete" || normalized === "completed" || normalized === "ok") {
+    action = "accept";
+  }
+  if (normalized === "revise" || normalized === "revision" || normalized === "retry" || normalized === "fix") {
+    action = "revise";
+  }
+  if (normalized === "fix_required" || normalized === "needs_revision" || normalized === "rework" || normalized === "reject") {
+    action = "revise";
+  }
+  if (normalized === "escalate" || normalized === "escalated" || normalized === "escalation") {
+    action = "escalate";
+  }
+  if (normalized === "blocked" || normalized === "blocker" || normalized === "needs_attention") {
+    action = "escalate";
+  }
+  if (action) return action === "accept" && blockingIssues > 0 ? "revise" : action;
   throw new Error("Superego JSON schema 校验失败：next_action 必须是 accept、revise 或 escalate");
 }
 

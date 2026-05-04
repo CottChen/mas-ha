@@ -9,6 +9,7 @@ import {
   buildHaDecisionPrompt,
   buildHaDecisionRepairPrompt,
   buildSuperegoPrompt,
+  buildSuperegoRepairPrompt,
   parseCritique,
   parseHaDecision,
 } from "./prompts.js";
@@ -99,7 +100,48 @@ export class MasRunner {
         let reviewText = "";
         try {
           reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, finalEgoOutput));
-          critique = parseCritique(reviewText);
+          try {
+            critique = parseCritique(reviewText);
+          } catch (error) {
+            const firstError = error instanceof Error ? error : new Error(String(error));
+            this.store.addAgentRun({
+              runId,
+              role: "superego",
+              iteration,
+              status: "failed",
+              input: { prompt, task, contract, repair: false },
+              output: { text: reviewText, error: firstError.message },
+            });
+            this.store.audit({ runId, actor: "superego", action: "review_parse_failed", payload: { message: firstError.message } });
+            reviewText = await superego.prompt(buildSuperegoRepairPrompt(reviewText, firstError.message));
+            try {
+              critique = parseCritique(reviewText);
+            } catch (repairError) {
+              const err = repairError instanceof Error ? repairError : new Error(String(repairError));
+              this.store.addAgentRun({
+                runId,
+                role: "superego",
+                iteration,
+                status: "failed",
+                input: { prompt, task, contract, repair: true },
+                output: { text: reviewText, error: err.message },
+              });
+              this.store.audit({ runId, actor: "superego", action: "review_repair_failed", payload: { message: err.message } });
+              critique = {
+                blocking_issues: 1,
+                quality_score: 0,
+                summary: `Superego 评审 JSON 解析失败且自修复失败：${err.message}`,
+                next_action: "escalate",
+                critique_items: [
+                  {
+                    category: "schema",
+                    severity: "high",
+                    suggestion: "请检查 Superego 原始输出和提示词约束，确保 next_action 只使用 accept、revise 或 escalate。",
+                  },
+                ],
+              };
+            }
+          }
           this.store.addAgentRun({
             runId,
             role: "superego",
@@ -114,6 +156,12 @@ export class MasRunner {
         }
 
         sink.thought(`\nSuperego 结论：${critique.summary || critique.next_action}\n`);
+        if (critique.next_action === "escalate") {
+          const result = `HA 终验未通过：Superego 要求人工介入。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
+          this.store.updateRun(runId, "needs_attention", { result, critique });
+          sink.done(result);
+          return { runId, result };
+        }
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
           const result = `HA 终验通过。\n\n${finalEgoOutput}`;
           this.store.updateRun(runId, "completed", { result, critique });
