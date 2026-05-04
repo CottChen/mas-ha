@@ -1,13 +1,20 @@
+import type { OrchestrationMode } from "./core/orchestration.js";
+
 export type RoleName = "ha" | "ego" | "superego";
 
 export type ApprovalMode = "approve-reads" | "approve-all" | "deny-writes";
+export type { OrchestrationMode } from "./core/orchestration.js";
 
 export interface MasRunOptions {
   cwd: string;
   approvalMode: ApprovalMode;
+  orchestrationMode: OrchestrationMode;
   maxIterations: number;
   model?: string;
   signal?: AbortSignal;
+  conversationHistory?: ConversationTurn[];
+  conversationSummary?: string;
+  availableSkills?: SkillSummary[];
 }
 
 export interface StreamSink {
@@ -23,7 +30,7 @@ export interface StreamSink {
 export interface ToolEventInput {
   id: string;
   title: string;
-  kind: "read" | "edit" | "execute";
+  kind: "read" | "edit" | "execute" | "search" | "delete" | "move" | "fetch" | "think" | "other";
   rawInput?: unknown;
   locations?: Array<{ path: string; range?: { startLine: number; endLine?: number } }>;
 }
@@ -47,4 +54,27 @@ export interface CritiqueResult {
     severity: "low" | "medium" | "high";
     suggestion: string;
   }>;
+}
+
+export interface HaDecision {
+  next_action: "answer" | "execute" | "clarify";
+  response: string;
+  acceptance_contract: string;
+  rationale: string;
+}
+
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ConversationContext {
+  summary: string;
+  turns: ConversationTurn[];
+}
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  path: string;
 }

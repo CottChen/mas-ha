@@ -23,10 +23,27 @@ npm run doctor
 /home/admin/mas-impl/bin/mas acp
 ```
 
+可选追加编排模式参数：
+
+```bash
+/home/admin/mas-impl/bin/mas acp --orchestration-mode ha-ego-superego
+```
+
+当前支持两种编排模式：
+
+- `ha-ego-superego`：默认模式，HA 生成验收合同，Ego 执行，Superego 评审并按需返工。
+- `ha-ego`：HA 生成验收合同，Ego 执行，跳过 Superego 评审和返工。
+
 如果 AionUI 使用 custom backend 启动方式，也可能传入 `--experimental-acp`。MAS 已支持以下等价入口：
 
 ```bash
 /home/admin/mas-impl/bin/mas --experimental-acp
+```
+
+`--experimental-acp` 入口同样支持编排模式参数：
+
+```bash
+/home/admin/mas-impl/bin/mas --experimental-acp --orchestration-mode ha-ego
 ```
 
 高自主模式会自动批准写文件、编辑文件和执行命令：
@@ -36,6 +53,33 @@ npm run doctor
 ```
 
 默认模式下，读操作自动通过；写文件、编辑文件和执行命令会通过 ACP `session/request_permission` 请求 AionUI 审批。
+
+### AionUI 会话能力
+
+`session/new` 和 `session/load` 会返回编排模式配置项。AionUI 如果展示配置面板，可在“编排模式”中切换 `ha-ego-superego` 或 `ha-ego`；MAS 也兼容 `session/set_config_option` 更新该配置。
+
+MAS 会向 AionUI 公告以下命令：
+
+- `/compact`：压缩当前 MAS 会话上下文，后续请求会携带压缩摘要和最近对话。
+- `/skill:<name>`：展示 Pi 当前可发现技能。当前版本主要用于发现和提示，强制加载技能参数仍在后续待做中。
+
+MAS 会持久化同一 ACP session 下的 user / assistant 文本消息。`session/load` 时会恢复压缩摘要和最近对话；如果新表中没有消息，会从历史 `runs` 兼容恢复对话。
+
+### 本地环境变量
+
+MAS 启动时会自动读取项目根目录 `.env.local`。该文件只用于本地 worktree 差异配置，不提交仓库。
+
+常用字段：
+
+```bash
+MAS_WORKTREE=orchestration
+MAS_ALIAS=mas-orch
+MAS_DEV_PORT=4112
+MAS_HOME=/home/admin/.mas-orchestration
+MAS_SKILL_PATHS=/path/to/skills:/path/to/more-skills
+```
+
+`MAS_SKILL_PATHS` 用于追加 Pi 技能目录。Linux/macOS 使用 `:` 分隔多个路径，Windows 使用 `;` 分隔。
 
 ## ACP 握手验证
 
@@ -52,15 +96,18 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | /ho
 ```bash
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  '{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/admin/mas-impl"}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/home/admin/mas-impl","orchestrationMode":"ha-ego-superego"}}' \
   | /home/admin/mas-impl/bin/mas --experimental-acp
 ```
 
-成功时 `session/new` 结果中的 `models.currentModelId` 应为：
+成功时 `session/new` 结果中应包含：
 
 ```text
-dashscope-anthropic/qwen3.6-plus
+models.currentModelId = dashscope-anthropic/qwen3.6-plus
+configOptions 中的 orchestrationMode
 ```
+
+验证 `/compact` 命令公告和技能 metadata，可查看 `session/new` 后 MAS 发送的 `session/update`，其中应包含 `available_commands_update`；如果配置了 `MAS_SKILL_PATHS`，`session/new` 结果的 `metadata.skills` 应包含可发现技能摘要。
 
 ## AionUI 日志排查
 

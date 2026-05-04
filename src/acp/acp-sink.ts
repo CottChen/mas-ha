@@ -30,7 +30,7 @@ export class AcpStreamSink implements StreamSink {
       kind: input.kind,
       rawInput: input.rawInput,
       locations: input.locations ?? [],
-      content: [{ type: "content", content: JSON.stringify(input.rawInput ?? {}) }],
+      content: [textToolContent(JSON.stringify(input.rawInput ?? {}))],
     });
   }
 
@@ -63,7 +63,7 @@ export class AcpStreamSink implements StreamSink {
         rawInput: input.rawInput,
         status: "pending",
         locations: input.locations ?? [],
-        content: [{ type: "content", content: JSON.stringify(input.rawInput ?? {}) }],
+        content: [textToolContent(JSON.stringify(input.rawInput ?? {}))],
       },
     });
     const optionId = String(result?.outcome?.optionId ?? "reject_once");
@@ -95,4 +95,8 @@ export class AcpStreamSink implements StreamSink {
       update,
     });
   }
+}
+
+export function textToolContent(text: string): Record<string, unknown> {
+  return { type: "content", content: { type: "text", text } };
 }
