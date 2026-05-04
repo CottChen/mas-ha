@@ -34,6 +34,17 @@
 - `grep` / `find` 映射为 `search`，读文件映射为 `read`，写入映射为 `edit`，命令映射为 `execute`。
 - 写文件、编辑和命令仍通过 `session/request_permission` 请求 AionUI 审批。
 
+### 结构化输出
+
+- HA / Ego / Superego 的内部结构化结果统一使用 Pi SDK typed tool 提交：
+  - `ha_decision`：HA 路由决策。
+  - `ego_result`：Ego 执行结果、证据、修改文件、验证结果和风险。
+  - `superego_review`：Superego 评审结论、阻塞问题、评分和返工建议。
+- MAS 对 typed tool 参数再做业务 schema 校验，避免只依赖模型或 provider 的工具参数校验。
+- 如果 typed tool 缺失、参数不符合 MAS schema，或模型退回普通 JSON 文本，MAS 会进入对应 repair prompt，要求重新调用结构化工具。
+- repair 仍失败时，Ego 返回 `needs_attention`，Superego 返回 `escalate`，不把结构化输出失败伪造成执行成功。
+- 这些内部结构化工具不会作为普通 ACP tool stream 暴露给 AionUI；AionUI 只看到用户相关文本、真实工具调用、权限请求和最终结果。
+
 ### 技能
 
 - MAS 通过 Pi `DefaultResourceLoader` 发现 Pi 技能。

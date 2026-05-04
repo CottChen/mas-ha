@@ -65,6 +65,7 @@ npm install @mariozechner/pi-coding-agent
 - 已实现 ACP 初始化、建会话、加载会话、发送 prompt、取消 prompt 的外壳。
 - 已实现 HA / Ego / Superego 和 HA / Ego 两种编排模式。
 - 已实现 HA 路由、验收合同生成、Ego 执行、Superego 评审和返工闭环。
+- 已实现 HA / Ego / Superego 的结构化输出基础能力：通过 Pi SDK typed tool 提交结果，再由 MAS 做业务校验和 repair 兜底。
 - 已实现 Pi 工具事件到 ACP `session/update` 的映射。
 - 已实现写、编辑、bash 的 ACP 权限请求。
 - 已实现 SQLite run、agent_run、approval、audit、messages 和 session_context 记录。

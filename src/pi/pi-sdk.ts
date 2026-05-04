@@ -2,7 +2,7 @@ import { delimiter } from "node:path";
 import { existsSync } from "node:fs";
 import { Type } from "@mariozechner/pi-ai";
 import { textToolContent } from "../acp/acp-sink.js";
-import type { ApprovalMode, HaDecision, PermissionDecision, StreamSink, ToolEventInput } from "../types.js";
+import type { ApprovalMode, CritiqueResult, EgoResult, HaDecision, PermissionDecision, StreamSink, ToolEventInput } from "../types.js";
 
 type PiModule = Record<string, any>;
 
@@ -30,12 +30,16 @@ export interface PiSessionHandle {
   dispose(): void;
   messages(): unknown[];
   haDecision(): HaDecision | undefined;
+  structuredOutput<T>(toolName: string): T | undefined;
+  clearStructuredOutput(toolName: string): void;
 }
 
 export async function createPiSession(options: PiSessionOptions): Promise<PiSessionHandle> {
   const pi = await loadPiSdk();
-  let capturedHaDecision: HaDecision | undefined;
-  const customTools = options.role === "ha" ? [createHaDecisionTool(pi, (decision) => (capturedHaDecision = decision))] : [];
+  const capturedStructuredOutputs = new Map<string, unknown>();
+  const customTools = createRoleStructuredOutputTools(pi, options.role, (toolName, output) => {
+    capturedStructuredOutputs.set(toolName, output);
+  });
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd: options.cwd,
     agentDir: pi.getAgentDir(),
@@ -50,8 +54,8 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
       options.role === "ha"
         ? ["ha_decision"]
         : options.role === "ego"
-        ? ["read", "grep", "find", "ls", "write", "edit", "bash"]
-        : ["read", "grep", "find", "ls"],
+        ? ["read", "grep", "find", "ls", "write", "edit", "bash", "ego_result"]
+        : ["read", "grep", "find", "ls", "superego_review"],
     customTools,
     sessionManager: pi.SessionManager.inMemory(options.cwd),
     resourceLoader,
@@ -70,9 +74,11 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
       }
     }
     if (event.type === "tool_execution_start") {
+      if (isInternalTool(String(event.toolName ?? ""))) return;
       options.sink.toolStart(toToolEvent(event.toolCallId, event.toolName, event.args));
     }
     if (event.type === "tool_execution_update") {
+      if (isInternalTool(String(event.toolName ?? ""))) return;
       options.sink.toolUpdate({
         ...toToolEvent(event.toolCallId, event.toolName, event.args),
         status: "in_progress",
@@ -80,6 +86,7 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
       });
     }
     if (event.type === "tool_execution_end") {
+      if (isInternalTool(String(event.toolName ?? ""))) return;
       options.sink.toolUpdate({
         ...toToolEvent(event.toolCallId, event.toolName, event.args),
         status: event.isError ? "failed" : "completed",
@@ -104,7 +111,13 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
       return session.messages ?? session.agent?.state?.messages ?? [];
     },
     haDecision() {
-      return capturedHaDecision;
+      return capturedStructuredOutputs.get("ha_decision") as HaDecision | undefined;
+    },
+    structuredOutput<T>(toolName: string) {
+      return capturedStructuredOutputs.get(toolName) as T | undefined;
+    },
+    clearStructuredOutput(toolName: string) {
+      capturedStructuredOutputs.delete(toolName);
     },
   };
 }
@@ -167,11 +180,54 @@ function isReadOnlyTool(toolName: string): boolean {
 }
 
 function isInternalTool(toolName: string): boolean {
-  return toolName === "ha_decision";
+  return toolName === "ha_decision" || toolName === "ego_result" || toolName === "superego_review";
 }
 
-function createHaDecisionTool(pi: PiModule, capture: (decision: HaDecision) => void): unknown {
+type StructuredOutputToolSpec<T> = {
+  name: string;
+  label: string;
+  description: string;
+  promptSnippet: string;
+  promptGuidelines: string[];
+  parameters: unknown;
+  resultText: string;
+};
+
+function createRoleStructuredOutputTools(
+  pi: PiModule,
+  role: PiSessionOptions["role"],
+  capture: (toolName: string, output: unknown) => void,
+): unknown[] {
+  if (role === "ha") return [createStructuredOutputTool(pi, haDecisionToolSpec(), capture)];
+  if (role === "ego") return [createStructuredOutputTool(pi, egoResultToolSpec(), capture)];
+  return [createStructuredOutputTool(pi, superegoReviewToolSpec(), capture)];
+}
+
+function createStructuredOutputTool<T>(
+  pi: PiModule,
+  spec: StructuredOutputToolSpec<T>,
+  capture: (toolName: string, output: T) => void,
+): unknown {
   return pi.defineTool({
+    name: spec.name,
+    label: spec.label,
+    description: spec.description,
+    promptSnippet: spec.promptSnippet,
+    promptGuidelines: spec.promptGuidelines,
+    parameters: spec.parameters,
+    async execute(_toolCallId: string, params: T) {
+      capture(spec.name, params);
+      return {
+        content: [{ type: "text", text: spec.resultText }],
+        details: params,
+        terminate: true,
+      };
+    },
+  });
+}
+
+function haDecisionToolSpec(): StructuredOutputToolSpec<HaDecision> {
+  return {
     name: "ha_decision",
     label: "HA Decision",
     description: "提交 MAS HA 内部路由决策。必须作为最终动作调用，不要再输出普通文本。",
@@ -185,15 +241,68 @@ function createHaDecisionTool(pi: PiModule, capture: (decision: HaDecision) => v
       acceptance_contract: Type.String({ description: "execute 时的验收合同；answer/clarify 时为空字符串" }),
       rationale: Type.String({ description: "简短说明路由理由" }),
     }),
-    async execute(_toolCallId: string, params: HaDecision) {
-      capture(params);
-      return {
-        content: [{ type: "text", text: "HA decision captured" }],
-        details: params,
-        terminate: true,
-      };
-    },
-  });
+    resultText: "HA decision captured",
+  };
+}
+
+function egoResultToolSpec(): StructuredOutputToolSpec<EgoResult> {
+  return {
+    name: "ego_result",
+    label: "Ego Result",
+    description: "提交 MAS Ego 结构化执行结果。必须作为最终动作调用，不要再输出普通文本。",
+    promptSnippet: "提交 MAS Ego 结构化执行结果",
+    promptGuidelines: ["Ego 完成执行或确认阻塞后，必须调用 ego_result 作为最终动作；调用后不要继续输出文本。"],
+    parameters: Type.Object({
+      status: Type.Union([Type.Literal("completed"), Type.Literal("needs_attention"), Type.Literal("blocked")], {
+        description: "执行状态",
+      }),
+      summary: Type.String({ description: "执行摘要" }),
+      final_response: Type.String({ description: "最终给用户看的中文回复" }),
+      evidence: Type.Array(Type.String({ description: "关键证据" }), { description: "读取、修改和验证证据" }),
+      changed_files: Type.Array(Type.String({ description: "文件路径" }), { description: "实际修改过的文件路径" }),
+      verification: Type.Array(
+        Type.Object({
+          command: Type.String({ description: "验证命令；未运行时为空字符串或说明项" }),
+          result: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("not_run")], {
+            description: "验证结果",
+          }),
+          notes: Type.String({ description: "验证说明" }),
+        }),
+        { description: "验证记录" },
+      ),
+      risks: Type.Array(Type.String({ description: "剩余风险" }), { description: "剩余风险或无法验证事项" }),
+    }),
+    resultText: "Ego result captured",
+  };
+}
+
+function superegoReviewToolSpec(): StructuredOutputToolSpec<CritiqueResult> {
+  return {
+    name: "superego_review",
+    label: "Superego Review",
+    description: "提交 MAS Superego 结构化评审结果。必须作为最终动作调用，不要再输出普通文本。",
+    promptSnippet: "提交 MAS Superego 结构化评审结果",
+    promptGuidelines: ["Superego 完成评审后，必须调用 superego_review 作为最终动作；调用后不要继续输出文本。"],
+    parameters: Type.Object({
+      blocking_issues: Type.Number({ description: "阻塞问题数量" }),
+      quality_score: Type.Number({ description: "质量评分，0 到 1" }),
+      summary: Type.String({ description: "评审摘要" }),
+      next_action: Type.Union([Type.Literal("accept"), Type.Literal("revise"), Type.Literal("escalate")], {
+        description: "下一步动作",
+      }),
+      critique_items: Type.Array(
+        Type.Object({
+          category: Type.String({ description: "问题类别" }),
+          severity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")], {
+            description: "严重程度",
+          }),
+          suggestion: Type.String({ description: "改进建议" }),
+        }),
+        { description: "评审问题列表" },
+      ),
+    }),
+    resultText: "Superego review captured",
+  };
 }
 
 function toToolEvent(id: string, toolName: string, rawInput: unknown): ToolEventInput {
