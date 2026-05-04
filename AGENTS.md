@@ -8,6 +8,12 @@
 ## AGENTS.md 的约束
 - `AGENTS.md` 必须保持简洁，只记录长期有效的项目规则和关键经验；具体操作步骤、排查细节和配置示例应写入 `docs/` 下的专门文档。
 
+## Windows 中文文档编码
+
+- 中文 Markdown、提示词和技能说明统一保存为无 BOM UTF-8；Windows 环境优先用 Git Bash 或 Node.js 读取、验证和生成中文文档。
+- PowerShell 读取中文文件前应显式设置 UTF-8 输出编码；写中文文件时不要使用默认 `Set-Content` / `Out-File`，应显式写入无 BOM UTF-8。
+- 看到 `鐢ㄤ簬`、`涓`、`鍙` 这类乱码时，先用 Git Bash 检查原始文件字节，区分“显示链路乱码”和“文件内容损坏”。详细做法见 `docs/WINDOWS_UTF8.md`。
+
 ## 语言要求
 
 - 所有文档、注释、说明和最终输出必须使用简体中文。

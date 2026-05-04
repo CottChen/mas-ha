@@ -1,4 +1,8 @@
-import type { ApprovalMode, PermissionDecision, StreamSink, ToolEventInput } from "../types.js";
+import { delimiter } from "node:path";
+import { existsSync } from "node:fs";
+import { Type } from "@mariozechner/pi-ai";
+import { textToolContent } from "../acp/acp-sink.js";
+import type { ApprovalMode, HaDecision, PermissionDecision, StreamSink, ToolEventInput } from "../types.js";
 
 type PiModule = Record<string, any>;
 
@@ -25,20 +29,30 @@ export interface PiSessionHandle {
   abort(): Promise<void>;
   dispose(): void;
   messages(): unknown[];
+  haDecision(): HaDecision | undefined;
 }
 
 export async function createPiSession(options: PiSessionOptions): Promise<PiSessionHandle> {
   const pi = await loadPiSdk();
+  let capturedHaDecision: HaDecision | undefined;
+  const customTools = options.role === "ha" ? [createHaDecisionTool(pi, (decision) => (capturedHaDecision = decision))] : [];
   const resourceLoader = new pi.DefaultResourceLoader({
     cwd: options.cwd,
     agentDir: pi.getAgentDir(),
+    additionalSkillPaths: configuredSkillPaths(),
     extensionFactories: [createPermissionExtension(options)],
   });
   await resourceLoader.reload();
 
   const { session } = await pi.createAgentSession({
     cwd: options.cwd,
-    tools: options.role === "superego" ? ["read", "grep", "find", "ls"] : ["read", "grep", "find", "ls", "write", "edit", "bash"],
+    tools:
+      options.role === "ha"
+        ? ["ha_decision"]
+        : options.role === "ego"
+        ? ["read", "grep", "find", "ls", "write", "edit", "bash"]
+        : ["read", "grep", "find", "ls"],
+    customTools,
     sessionManager: pi.SessionManager.inMemory(options.cwd),
     resourceLoader,
   });
@@ -61,15 +75,15 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     if (event.type === "tool_execution_update") {
       options.sink.toolUpdate({
         ...toToolEvent(event.toolCallId, event.toolName, event.args),
-        status: "running",
-        content: [{ type: "content", content: String(event.partialResult ?? "") }],
+        status: "in_progress",
+        content: [textToolContent(String(event.partialResult ?? ""))],
       });
     }
     if (event.type === "tool_execution_end") {
       options.sink.toolUpdate({
         ...toToolEvent(event.toolCallId, event.toolName, event.args),
         status: event.isError ? "failed" : "completed",
-        content: [{ type: "content", content: stringifyToolResult(event.result) }],
+        content: [textToolContent(stringifyToolResult(event.result))],
       });
     }
   });
@@ -89,14 +103,26 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     messages() {
       return session.messages ?? session.agent?.state?.messages ?? [];
     },
+    haDecision() {
+      return capturedHaDecision;
+    },
   };
+}
+
+function configuredSkillPaths(): string[] {
+  const value = process.env.MAS_SKILL_PATHS;
+  if (!value) return [];
+  return value
+    .split(delimiter)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0 && existsSync(item));
 }
 
 function createPermissionExtension(options: PiSessionOptions): (api: any) => void {
   return (pi: any) => {
     pi.on("tool_call", async (event: any) => {
       const toolName = String(event.toolName ?? "");
-      if (isReadOnlyTool(toolName)) return undefined;
+      if (isReadOnlyTool(toolName) || isInternalTool(toolName)) return undefined;
 
       const tool = toToolEvent(event.toolCallId, toolName, event.input);
       if (options.approvalMode === "approve-all") {
@@ -140,14 +166,51 @@ function isReadOnlyTool(toolName: string): boolean {
   return toolName === "read" || toolName === "grep" || toolName === "find" || toolName === "ls";
 }
 
+function isInternalTool(toolName: string): boolean {
+  return toolName === "ha_decision";
+}
+
+function createHaDecisionTool(pi: PiModule, capture: (decision: HaDecision) => void): unknown {
+  return pi.defineTool({
+    name: "ha_decision",
+    label: "HA Decision",
+    description: "提交 MAS HA 内部路由决策。必须作为最终动作调用，不要再输出普通文本。",
+    promptSnippet: "提交 MAS HA 内部路由决策",
+    promptGuidelines: ["HA 路由时必须调用 ha_decision 作为最终动作；调用后不要继续输出文本。"],
+    parameters: Type.Object({
+      next_action: Type.Union([Type.Literal("answer"), Type.Literal("execute"), Type.Literal("clarify")], {
+        description: "下一步动作",
+      }),
+      response: Type.String({ description: "answer/clarify 时给用户的中文回复；execute 时为空字符串" }),
+      acceptance_contract: Type.String({ description: "execute 时的验收合同；answer/clarify 时为空字符串" }),
+      rationale: Type.String({ description: "简短说明路由理由" }),
+    }),
+    async execute(_toolCallId: string, params: HaDecision) {
+      capture(params);
+      return {
+        content: [{ type: "text", text: "HA decision captured" }],
+        details: params,
+        terminate: true,
+      };
+    },
+  });
+}
+
 function toToolEvent(id: string, toolName: string, rawInput: unknown): ToolEventInput {
   return {
     id,
     title: toolName,
-    kind: toolName === "write" || toolName === "edit" ? "edit" : isReadOnlyTool(toolName) ? "read" : "execute",
+    kind: toToolKind(toolName),
     rawInput,
     locations: extractLocations(rawInput),
   };
+}
+
+function toToolKind(toolName: string): ToolEventInput["kind"] {
+  if (toolName === "write" || toolName === "edit") return "edit";
+  if (toolName === "grep" || toolName === "find") return "search";
+  if (isReadOnlyTool(toolName)) return "read";
+  return "execute";
 }
 
 function extractLocations(rawInput: unknown): Array<{ path: string }> | undefined {

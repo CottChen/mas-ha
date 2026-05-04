@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { startAcpServer } from "./acp/server.js";
+import { normalizeOrchestrationMode, orchestrationModeList } from "./core/orchestration.js";
 import { MasRunner } from "./core/runner.js";
 import { loadPiSdk } from "./pi/pi-sdk.js";
 import { MasStore } from "./storage.js";
@@ -14,10 +15,11 @@ async function main(): Promise<void> {
     denyWrites: flags.has("deny-writes"),
   });
   const maxIterations = Number(flags.get("max-iterations") ?? 3);
+  const orchestrationMode = normalizeOrchestrationMode(flags.get("orchestration-mode") ?? flags.get("mode"));
 
   switch (command) {
     case "acp":
-      startAcpServer({ approvalMode, maxIterations });
+      startAcpServer({ approvalMode, maxIterations, orchestrationMode });
       return;
     case "run": {
       const prompt = positional(args).join(" ").trim();
@@ -28,6 +30,7 @@ async function main(): Promise<void> {
         {
           cwd: String(flags.get("cwd") ?? process.cwd()),
           approvalMode,
+          orchestrationMode,
           maxIterations,
         },
         new ConsoleSink(approvalMode),
@@ -138,14 +141,18 @@ function positional(args: string[]): string[] {
 }
 
 function printHelp(): void {
+  const modes = orchestrationModeList().map((mode) => `    ${mode.id} - ${mode.description}`).join("\n");
   console.log(`MAS MVP
 
 用法：
-  mas acp [--approve-all] [--max-iterations 3]
-  mas --experimental-acp [--approve-all] [--max-iterations 3]
-  mas run <task> [--cwd <dir>] [--approve-all] [--deny-writes]
+  mas acp [--approve-all] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
+  mas --experimental-acp [--approve-all] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
+  mas run <task> [--cwd <dir>] [--approve-all] [--deny-writes] [--orchestration-mode ha-ego-superego]
   mas status [--limit 20]
   mas doctor
+
+编排模式：
+${modes}
 `);
 }
 

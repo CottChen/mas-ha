@@ -18,6 +18,7 @@ export class JsonRpcPeer {
   private nextId = 1000;
   private readonly pending = new Map<number | string, Pending>();
   private readonly handlers = new Map<string, (params: any, request: JsonRpcRequest) => Promise<any> | any>();
+  private readonly activeHandlers = new Set<Promise<void>>();
 
   constructor(
     private readonly input: Readable,
@@ -32,7 +33,15 @@ export class JsonRpcPeer {
     const rl = readline.createInterface({ input: this.input, terminal: false });
     rl.on("line", (line) => {
       if (!line.trim()) return;
-      void this.handleLine(line);
+      const active = this.handleLine(line).finally(() => this.activeHandlers.delete(active));
+      this.activeHandlers.add(active);
+    });
+    rl.on("close", () => {
+      if (this.activeHandlers.size === 0) return;
+      const timer = setInterval(() => {
+        if (this.activeHandlers.size > 0) return;
+        clearInterval(timer);
+      }, 10);
     });
   }
 
@@ -55,7 +64,7 @@ export class JsonRpcPeer {
   private async handleLine(line: string): Promise<void> {
     let msg: any;
     try {
-      msg = JSON.parse(line);
+      msg = JSON.parse(line.replace(/^\uFEFF/, ""));
     } catch {
       return;
     }
@@ -77,25 +86,33 @@ export class JsonRpcPeer {
     const request = msg as JsonRpcRequest;
     const handler = this.handlers.get(request.method);
     if (!handler) {
-      if (request.id !== undefined) this.writeError(request.id, -32601, `Method not found: ${request.method}`);
+      if (request.id !== undefined) await this.writeError(request.id, -32601, `Method not found: ${request.method}`);
       return;
     }
 
     try {
       const result = await handler(request.params, request);
-      if (request.id !== undefined) this.write({ jsonrpc: "2.0", id: request.id, result });
+      if (request.id !== undefined) await this.write({ jsonrpc: "2.0", id: request.id, result });
     } catch (error) {
       if (request.id !== undefined) {
-        this.writeError(request.id, -32603, error instanceof Error ? error.message : String(error));
+        await this.writeError(request.id, -32603, error instanceof Error ? error.message : String(error));
       }
     }
   }
 
-  private writeError(id: string | number | null, code: number, message: string): void {
-    this.write({ jsonrpc: "2.0", id, error: { code, message } });
+  private writeError(id: string | number | null, code: number, message: string): Promise<void> {
+    return this.write({ jsonrpc: "2.0", id, error: { code, message } });
   }
 
-  private write(value: unknown): void {
-    this.output.write(`${JSON.stringify(value)}\n`);
+  private write(value: unknown): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.output.write(`${JSON.stringify(value)}\n`, (error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 }
