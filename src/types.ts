@@ -6,6 +6,31 @@ export type ApprovalMode = "approve-reads" | "approve-all" | "deny-writes";
 export type ApprovalModePolicy = "fixed" | "mutable";
 export type { OrchestrationMode } from "./core/orchestration.js";
 
+export type MasEventSource = "mas" | "pi";
+export type MasEventActor = RoleName | "system" | "user" | "tool" | "pi";
+
+export interface MasEventInput {
+  runId: string;
+  sessionId?: string;
+  role?: RoleName;
+  iteration?: number;
+  source: MasEventSource;
+  type: string;
+  actor: MasEventActor;
+  toolCallId?: string;
+  parentEventId?: string;
+  correlationId?: string;
+  payload?: unknown;
+  raw?: unknown;
+  createdAt?: string;
+}
+
+export interface MasEvent extends MasEventInput {
+  eventId: string;
+  sequence: number;
+  createdAt: string;
+}
+
 export interface MasRunOptions {
   cwd: string;
   approvalMode: ApprovalMode;

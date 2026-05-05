@@ -2,7 +2,17 @@ import { delimiter } from "node:path";
 import { existsSync } from "node:fs";
 import { Type } from "@mariozechner/pi-ai";
 import { textToolContent } from "../acp/acp-sink.js";
-import type { ApprovalMode, CritiqueResult, EgoResult, HaDecision, PermissionDecision, StreamSink, ToolEventInput } from "../types.js";
+import type {
+  ApprovalMode,
+  CritiqueResult,
+  EgoResult,
+  HaDecision,
+  MasEventInput,
+  PermissionDecision,
+  RoleName,
+  StreamSink,
+  ToolEventInput,
+} from "../types.js";
 
 type PiModule = Record<string, any>;
 
@@ -18,10 +28,13 @@ export async function loadPiSdk(): Promise<PiModule> {
 export interface PiSessionOptions {
   cwd: string;
   runId: string;
-  role: "ego" | "superego" | "ha";
+  sessionId?: string;
+  role: RoleName;
+  iteration: number;
   approvalMode: ApprovalMode;
   sink: StreamSink;
   recordApproval: (input: { toolCallId: string; toolName: string; decision: string; rawInput?: unknown }) => void;
+  recordEvent: (input: MasEventInput) => void;
 }
 
 export interface PiSessionHandle {
@@ -62,7 +75,12 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
   });
 
   let text = "";
-  session.subscribe((event: any) => {
+  recordMasEvent(options, "mas.agent_session.created", {
+    cwd: options.cwd,
+    approvalMode: options.approvalMode,
+  });
+  const unsubscribe = session.subscribe((event: any) => {
+    recordPiEvent(options, event);
     if (event.type === "message_update") {
       const update = event.assistantMessageEvent;
       if (update?.type === "text_delta" && typeof update.delta === "string") {
@@ -94,17 +112,20 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
       });
     }
   });
-
   return {
     async prompt(promptText: string) {
       text = "";
+      recordMasEvent(options, "mas.agent_prompt.started", { promptChars: promptText.length });
       await session.prompt(promptText);
+      recordMasEvent(options, "mas.agent_prompt.completed", { outputChars: text.length });
       return text;
     },
     async abort() {
       await session.abort();
     },
     dispose() {
+      recordMasEvent(options, "mas.agent_session.disposed", {});
+      unsubscribe();
       session.dispose();
     },
     messages() {
@@ -133,11 +154,20 @@ function configuredSkillPaths(): string[] {
 
 function createPermissionExtension(options: PiSessionOptions): (api: any) => void {
   return (pi: any) => {
+    pi.on("tool_result", (event: any) => {
+      recordPiEvent(options, { type: "tool_result", ...event });
+    });
     pi.on("tool_call", async (event: any) => {
       const toolName = String(event.toolName ?? "");
+      const tool = toToolEvent(event.toolCallId, toolName, event.input);
+      recordPiEvent(options, {
+        type: "tool_call",
+        toolCallId: tool.id,
+        toolName,
+        input: event.input,
+      });
       if (isReadOnlyTool(toolName) || isInternalTool(toolName)) return undefined;
 
-      const tool = toToolEvent(event.toolCallId, toolName, event.input);
       if (options.approvalMode === "approve-all") {
         options.recordApproval({
           toolCallId: tool.id,
@@ -145,6 +175,7 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
           decision: "allow_always",
           rawInput: event.input,
         });
+        recordApprovalDecision(options, tool, toolName, "allow_always", true);
         return undefined;
       }
       if (options.approvalMode === "deny-writes") {
@@ -154,12 +185,13 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
           decision: "reject_once",
           rawInput: event.input,
         });
+        recordApprovalDecision(options, tool, toolName, "reject_once", false);
         return { block: true, reason: `MAS 已拒绝工具调用：${toolName}` };
       }
 
       const decision: PermissionDecision = await options.sink.permission({
         ...tool,
-        sessionId: options.runId,
+        sessionId: options.sessionId ?? options.runId,
       });
       options.recordApproval({
         toolCallId: tool.id,
@@ -167,12 +199,87 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
         decision: decision.optionId,
         rawInput: event.input,
       });
+      recordApprovalDecision(options, tool, toolName, decision.optionId, decision.approved);
       if (!decision.approved) {
         return { block: true, reason: `用户拒绝了工具调用：${toolName}` };
       }
       return undefined;
     });
   };
+}
+
+function recordPiEvent(options: PiSessionOptions, event: any): void {
+  const type = typeof event?.type === "string" ? event.type : "unknown";
+  options.recordEvent({
+    runId: options.runId,
+    sessionId: options.sessionId,
+    role: options.role,
+    iteration: options.iteration,
+    source: "pi",
+    type: `pi.${type}`,
+    actor: options.role,
+    toolCallId: typeof event?.toolCallId === "string" ? event.toolCallId : undefined,
+    payload: summarizePiEvent(event),
+    raw: rawPiEventForStorage(type, event),
+  });
+}
+
+function recordMasEvent(options: PiSessionOptions, type: string, payload: unknown): void {
+  options.recordEvent({
+    runId: options.runId,
+    sessionId: options.sessionId,
+    role: options.role,
+    iteration: options.iteration,
+    source: "mas",
+    type,
+    actor: options.role,
+    payload,
+  });
+}
+
+function recordApprovalDecision(
+  options: PiSessionOptions,
+  tool: ToolEventInput,
+  toolName: string,
+  decision: string,
+  approved: boolean,
+): void {
+  options.recordEvent({
+    runId: options.runId,
+    sessionId: options.sessionId,
+    role: options.role,
+    iteration: options.iteration,
+    source: "mas",
+    type: "mas.approval.decided",
+    actor: "system",
+    toolCallId: tool.id,
+    payload: {
+      toolName,
+      decision,
+      approved,
+      kind: tool.kind,
+      locations: tool.locations ?? [],
+    },
+    raw: tool.rawInput,
+  });
+}
+
+function summarizePiEvent(event: any): Record<string, unknown> {
+  const type = typeof event?.type === "string" ? event.type : "unknown";
+  const summary: Record<string, unknown> = { type };
+  if (typeof event?.toolCallId === "string") summary.toolCallId = event.toolCallId;
+  if (typeof event?.toolName === "string") summary.toolName = event.toolName;
+  if (event?.assistantMessageEvent?.type) summary.assistantMessageEventType = event.assistantMessageEvent.type;
+  if (event?.isError !== undefined) summary.isError = Boolean(event.isError);
+  if (event?.turnIndex !== undefined) summary.turnIndex = event.turnIndex;
+  return summary;
+}
+
+function rawPiEventForStorage(type: string, event: any): unknown {
+  if (type === "message_update") return undefined;
+  if (type === "message_start" || type === "message_end") return undefined;
+  if (type === "agent_end" || type === "turn_end") return undefined;
+  return event;
 }
 
 function isReadOnlyTool(toolName: string): boolean {

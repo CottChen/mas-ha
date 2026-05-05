@@ -1,7 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ensureMasDirs, MAS_DATA_DIR } from "./config.js";
-import type { ConversationContext, ConversationTurn, RoleName } from "./types.js";
+import type { ConversationContext, ConversationTurn, MasEvent, MasEventInput, RoleName } from "./types.js";
 
 export class MasStore {
   private readonly db: DatabaseSync;
@@ -50,6 +51,26 @@ export class MasStore {
         payload_json TEXT,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        run_id TEXT NOT NULL,
+        session_id TEXT,
+        role TEXT,
+        iteration INTEGER,
+        source TEXT NOT NULL,
+        type TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        tool_call_id TEXT,
+        parent_event_id TEXT,
+        correlation_id TEXT,
+        payload_json TEXT,
+        raw_json TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_run_sequence ON events (run_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_events_session_sequence ON events (session_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_events_tool_call ON events (tool_call_id);
       CREATE TABLE IF NOT EXISTS messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -133,6 +154,86 @@ export class MasStore {
         input.payload === undefined ? null : JSON.stringify(input.payload),
         new Date().toISOString(),
       );
+  }
+
+  addEvent(input: MasEventInput): MasEvent {
+    const eventId = randomUUID();
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `INSERT INTO events (
+          event_id, run_id, session_id, role, iteration, source, type, actor, tool_call_id,
+          parent_event_id, correlation_id, payload_json, raw_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        eventId,
+        input.runId,
+        input.sessionId ?? null,
+        input.role ?? null,
+        input.iteration ?? null,
+        input.source,
+        input.type,
+        input.actor,
+        input.toolCallId ?? null,
+        input.parentEventId ?? null,
+        input.correlationId ?? null,
+        stringifyJson(input.payload),
+        stringifyJson(input.raw),
+        createdAt,
+      );
+    return {
+      ...input,
+      eventId,
+      sequence: Number(result.lastInsertRowid),
+      createdAt,
+    };
+  }
+
+  listEvents(runId: string, limit = 200): MasEvent[] {
+    const rows = this.db
+      .prepare(
+        `SELECT sequence, event_id, run_id, session_id, role, iteration, source, type, actor, tool_call_id,
+          parent_event_id, correlation_id, payload_json, raw_json, created_at
+         FROM events
+         WHERE run_id = ?
+         ORDER BY sequence ASC
+         LIMIT ?`,
+      )
+      .all(runId, limit) as Array<{
+      sequence: number;
+      event_id: string;
+      run_id: string;
+      session_id: string | null;
+      role: RoleName | null;
+      iteration: number | null;
+      source: MasEvent["source"];
+      type: string;
+      actor: MasEvent["actor"];
+      tool_call_id: string | null;
+      parent_event_id: string | null;
+      correlation_id: string | null;
+      payload_json: string | null;
+      raw_json: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      sequence: row.sequence,
+      eventId: row.event_id,
+      runId: row.run_id,
+      sessionId: row.session_id ?? undefined,
+      role: row.role ?? undefined,
+      iteration: row.iteration ?? undefined,
+      source: row.source,
+      type: row.type,
+      actor: row.actor,
+      toolCallId: row.tool_call_id ?? undefined,
+      parentEventId: row.parent_event_id ?? undefined,
+      correlationId: row.correlation_id ?? undefined,
+      payload: parseJson(row.payload_json),
+      raw: parseJson(row.raw_json),
+      createdAt: row.created_at,
+    }));
   }
 
   listRuns(limit = 20): unknown[] {
@@ -258,4 +359,22 @@ function buildExtractiveSummary(previous: string, rows: Array<{ role: string; co
     parts.push(`- ${role}: ${row.content.replace(/\s+/g, " ").slice(0, 500)}`);
   }
   return parts.join("\n").slice(-12000);
+}
+
+function stringifyJson(value: unknown): string | null {
+  if (value === undefined) return null;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return JSON.stringify({ unserializable: true, value: String(value) });
+  }
+}
+
+function parseJson(value: string | null): unknown {
+  if (!value) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
 }

@@ -159,7 +159,7 @@ export function startAcpServer(options: AcpServerOptions): void {
     const optionId = String(params?.optionId ?? params?.id ?? "");
     if (optionId === "orchestrationMode") {
       session.orchestrationMode = normalizeOrchestrationMode(params?.value);
-      queueConfigUpdate(peer, session.sessionId, session.approvalMode, session.orchestrationMode);
+      queueConfigUpdate(peer, session.sessionId, session.approvalMode);
     }
     return sessionResponse(session.sessionId, session.approvalMode, session.orchestrationMode, session.skills);
   });
@@ -269,20 +269,13 @@ function queueSessionUpdates(
   orchestrationMode: OrchestrationMode,
 ): void {
   setTimeout(() => {
-    queueConfigUpdate(peer, sessionId, approvalMode, orchestrationMode);
+    queueConfigUpdate(peer, sessionId, approvalMode);
     queueAvailableCommands(peer, sessionId, skills);
     replayHistory(peer, sessionId, context);
   }, 0);
 }
 
-function queueConfigUpdate(peer: JsonRpcPeer, sessionId: string, approvalMode: ApprovalMode, orchestrationMode: OrchestrationMode): void {
-  peer.notify("session/update", {
-    sessionId,
-    update: {
-      sessionUpdate: "config_option_update",
-      configOptions: sessionResponse(sessionId, approvalMode, orchestrationMode, []).configOptions,
-    },
-  });
+function queueConfigUpdate(peer: JsonRpcPeer, sessionId: string, approvalMode: ApprovalMode): void {
   queueModeUpdate(peer, sessionId, approvalMode);
 }
 
