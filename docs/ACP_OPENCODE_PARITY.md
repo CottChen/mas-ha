@@ -33,6 +33,7 @@
 - 工具内容按 ACP `ToolCallContent` 包装为文本 content block。
 - `grep` / `find` 映射为 `search`，读文件映射为 `read`，写入映射为 `edit`，命令映射为 `execute`。
 - 写文件、编辑和命令仍通过 `session/request_permission` 请求 AionUI 审批。
+- ACP 权限模式支持两套策略：默认 `fixed` 使用会话初始权限作为后续所有工具调用权限；`--approval-mode-policy mutable` 允许会话过程中通过 `session/set_mode` 切换“默认”/“免确认”。
 
 ### 结构化输出
 

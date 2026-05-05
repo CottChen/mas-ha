@@ -3,6 +3,7 @@ import type { OrchestrationMode } from "./core/orchestration.js";
 export type RoleName = "ha" | "ego" | "superego";
 
 export type ApprovalMode = "approve-reads" | "approve-all" | "deny-writes";
+export type ApprovalModePolicy = "fixed" | "mutable";
 export type { OrchestrationMode } from "./core/orchestration.js";
 
 export interface MasRunOptions {

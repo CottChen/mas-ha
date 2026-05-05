@@ -40,6 +40,12 @@ npm run doctor
 /home/admin/mas-impl/bin/mas acp --approve-all
 ```
 
+`--approve-all` 默认作为会话初始权限，并在会话内保持固定；如果需要允许 AionUI 会话过程中切换“默认”/“免确认”，追加：
+
+```bash
+/home/admin/mas-impl/bin/mas acp --approve-all --approval-mode-policy mutable
+```
+
 如需固定编排模式，可在命令中追加：
 
 ```bash

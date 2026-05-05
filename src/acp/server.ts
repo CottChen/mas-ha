@@ -5,7 +5,7 @@ import { normalizeOrchestrationMode, orchestrationModeList } from "../core/orche
 import { MasRunner } from "../core/runner.js";
 import { discoverSkills } from "../core/skills.js";
 import { MasStore } from "../storage.js";
-import type { ApprovalMode, ConversationContext, OrchestrationMode, SkillSummary } from "../types.js";
+import type { ApprovalMode, ApprovalModePolicy, ConversationContext, OrchestrationMode, SkillSummary } from "../types.js";
 
 type SessionState = {
   sessionId: string;
@@ -19,6 +19,7 @@ type SessionState = {
 
 export interface AcpServerOptions {
   approvalMode: ApprovalMode;
+  approvalModePolicy: ApprovalModePolicy;
   maxIterations: number;
   orchestrationMode: OrchestrationMode;
 }
@@ -54,7 +55,7 @@ export function startAcpServer(options: AcpServerOptions): void {
   peer.on("session/new", async (params) => {
     const sessionId = `mas-${randomUUID()}`;
     const orchestrationMode = normalizeOrchestrationMode(params?.orchestrationMode ?? options.orchestrationMode);
-    const approvalMode = normalizeSessionApprovalMode(params, options.approvalMode);
+    const approvalMode = normalizeInitialApprovalMode(params, options.approvalMode);
     const cwd = normalizeCwd(params?.cwd);
     const skills = await safeDiscoverSkills(cwd);
     sessions.set(sessionId, { sessionId, cwd, approvalMode, orchestrationMode, context: { summary: "", turns: [] }, skills });
@@ -65,7 +66,7 @@ export function startAcpServer(options: AcpServerOptions): void {
   peer.on("session/load", async (params) => {
     const sessionId = String(params?.sessionId ?? `mas-${randomUUID()}`);
     const orchestrationMode = normalizeOrchestrationMode(params?.orchestrationMode ?? options.orchestrationMode);
-    const approvalMode = normalizeSessionApprovalMode(params, options.approvalMode);
+    const approvalMode = normalizeInitialApprovalMode(params, options.approvalMode);
     const cwd = normalizeCwd(params?.cwd);
     const skills = await safeDiscoverSkills(cwd);
     const context = store.getConversationContext(sessionId);
@@ -145,7 +146,9 @@ export function startAcpServer(options: AcpServerOptions): void {
   peer.on("session/set_mode", (params) => {
     const session = sessions.get(String(params?.sessionId ?? ""));
     if (!session) return {};
-    session.approvalMode = approvalModeFromAcpMode(params?.modeId ?? params?.id ?? params?.mode ?? params?.value, options.approvalMode);
+    if (options.approvalModePolicy === "mutable") {
+      session.approvalMode = approvalModeFromAcpMode(params?.modeId ?? params?.id ?? params?.mode ?? params?.value, session.approvalMode);
+    }
     queueModeUpdate(peer, session.sessionId, session.approvalMode);
     return sessionResponse(session.sessionId, session.approvalMode, session.orchestrationMode, session.skills);
   });
@@ -203,10 +206,12 @@ function normalizeCwd(value: unknown): string {
   return typeof value === "string" && value.length > 0 ? value : process.cwd();
 }
 
-function normalizeSessionApprovalMode(params: unknown, fallback: ApprovalMode): ApprovalMode {
+function normalizeInitialApprovalMode(params: unknown, fallback: ApprovalMode): ApprovalMode {
   if (!params || typeof params !== "object") return fallback;
   const input = params as Record<string, unknown>;
-  return approvalModeFromAcpMode(input.modeId ?? input.mode ?? input.currentModeId, fallback);
+  const requested = input.modeId ?? input.mode ?? input.currentModeId;
+  if (fallback === "approve-all" && (requested === "default" || requested === "approve-reads")) return fallback;
+  return approvalModeFromAcpMode(requested, fallback);
 }
 
 function approvalModeFromAcpMode(value: unknown, fallback: ApprovalMode): ApprovalMode {
