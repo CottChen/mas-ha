@@ -8,7 +8,8 @@
 - 内部通过 Pi SDK 创建执行会话。
 - HA 生成验收合同，Ego 执行，Superego 评审。
 - 写文件、编辑文件、执行命令默认走 ACP 权限审批。
-- SQLite 记录 run、agent_run、approval、audit。
+- SQLite 记录 run、agent_run、approval、audit、message、session_context 和 append-only events。
+- `feature/comm-versioning` 已开始记录 Pi 运行时事件和 MAS 语义事件，详见 `docs/COMM_VERSIONING.md`。
 
 当前实现更偏“可验证架构骨架”，还不是生产级长任务控制面。
 
@@ -36,6 +37,7 @@
 
 - 数据模型升级：
   - 完善 workflow_run、task_run、iteration_run、artifact、validation_result 等实体。
+  - 基于当前 events 表补充事件查询、导出和回放接口。
   - 为工件建立不可变版本、内容哈希和父子关系。
   - 增加审计导出命令。
 - 工具和校验：

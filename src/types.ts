@@ -3,7 +3,33 @@ import type { OrchestrationMode } from "./core/orchestration.js";
 export type RoleName = "ha" | "ego" | "superego";
 
 export type ApprovalMode = "approve-reads" | "approve-all" | "deny-writes";
+export type ApprovalModePolicy = "fixed" | "mutable";
 export type { OrchestrationMode } from "./core/orchestration.js";
+
+export type MasEventSource = "mas" | "pi";
+export type MasEventActor = RoleName | "system" | "user" | "tool" | "pi";
+
+export interface MasEventInput {
+  runId: string;
+  sessionId?: string;
+  role?: RoleName;
+  iteration?: number;
+  source: MasEventSource;
+  type: string;
+  actor: MasEventActor;
+  toolCallId?: string;
+  parentEventId?: string;
+  correlationId?: string;
+  payload?: unknown;
+  raw?: unknown;
+  createdAt?: string;
+}
+
+export interface MasEvent extends MasEventInput {
+  eventId: string;
+  sequence: number;
+  createdAt: string;
+}
 
 export interface MasRunOptions {
   cwd: string;
@@ -54,6 +80,20 @@ export interface CritiqueResult {
     severity: "low" | "medium" | "high";
     suggestion: string;
   }>;
+}
+
+export interface EgoResult {
+  status: "completed" | "needs_attention" | "blocked";
+  summary: string;
+  final_response: string;
+  evidence: string[];
+  changed_files: string[];
+  verification: Array<{
+    command: string;
+    result: "passed" | "failed" | "not_run";
+    notes: string;
+  }>;
+  risks: string[];
 }
 
 export interface HaDecision {

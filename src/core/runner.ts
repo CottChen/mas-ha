@@ -1,15 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { MasStore } from "../storage.js";
-import type { ApprovalMode, ConversationTurn, CritiqueResult, HaDecision, MasRunOptions, StreamSink } from "../types.js";
+import type { ApprovalMode, ConversationTurn, CritiqueResult, EgoResult, HaDecision, MasRunOptions, StreamSink } from "../types.js";
 import { createPiSession } from "../pi/pi-sdk.js";
 import { ORCHESTRATION_MODES } from "./orchestration.js";
 import {
   buildAcceptanceContract,
   buildEgoPrompt,
+  buildEgoRepairPrompt,
   buildHaDecisionPrompt,
   buildHaDecisionRepairPrompt,
   buildSuperegoPrompt,
+  buildSuperegoRepairPrompt,
   parseCritique,
+  parseEgoResult,
   parseHaDecision,
 } from "./prompts.js";
 
@@ -21,12 +24,25 @@ export class MasRunner {
     const mode = ORCHESTRATION_MODES[options.orchestrationMode];
     const task = buildTaskWithConversation(prompt, options.conversationHistory, options.conversationSummary, options.availableSkills);
     this.store.createRun({ runId, sessionId, cwd: options.cwd, prompt });
+    this.store.addEvent({
+      runId,
+      sessionId,
+      source: "mas",
+      type: "mas.run.started",
+      actor: "ha",
+      payload: {
+        cwd: options.cwd,
+        orchestrationMode: mode.id,
+        approvalMode: options.approvalMode,
+      },
+    });
     this.store.audit({
       runId,
       actor: "ha",
       action: "run_started",
       payload: {
         cwd: options.cwd,
+        approvalMode: options.approvalMode,
         orchestrationMode: mode.id,
         historyTurns: options.conversationHistory?.length ?? 0,
         hasConversationSummary: Boolean(options.conversationSummary?.trim()),
@@ -36,12 +52,21 @@ export class MasRunner {
 
     let critique: CritiqueResult | undefined;
     let finalEgoOutput = "";
+    let egoResult: EgoResult | undefined;
 
     try {
-      const haDecision = await this.decideWithHa(task, prompt, options, sink, runId, mode);
+      const haDecision = await this.decideWithHa(task, prompt, options, sink, runId, sessionId, mode);
       if (haDecision.next_action === "answer" || haDecision.next_action === "clarify") {
         const result = haDecision.response;
         this.store.updateRun(runId, "completed", { result, orchestrationMode: mode.id, haDecision });
+        this.store.addEvent({
+          runId,
+          sessionId,
+          source: "mas",
+          type: "mas.run.completed",
+          actor: "ha",
+          payload: { resultKind: haDecision.next_action, orchestrationMode: mode.id },
+        });
         sink.done(result);
         return { runId, result };
       }
@@ -55,31 +80,61 @@ export class MasRunner {
         const ego = await createPiSession({
           cwd: options.cwd,
           runId,
+          sessionId,
           role: "ego",
+          iteration,
           approvalMode: options.approvalMode,
           sink,
           recordApproval: (input) => this.store.addApproval({ runId, ...input }),
+          recordEvent: (input) => this.store.addEvent(input),
         });
         const abortEgo = () => void ego.abort();
         options.signal?.addEventListener("abort", abortEgo, { once: true });
         try {
-          finalEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique));
+          const rawEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique));
+          egoResult = await this.parseEgoWithRepair(rawEgoOutput, ego, prompt, task, critique, runId, iteration);
+          finalEgoOutput = egoResult.final_response;
           this.store.addAgentRun({
             runId,
             role: "ego",
             iteration,
             status: "completed",
             input: { prompt, task, critique },
-            output: { text: finalEgoOutput, messages: ego.messages() },
+            output: { text: rawEgoOutput, result: egoResult, messages: ego.messages() },
+          });
+          this.store.addEvent({
+            runId,
+            sessionId,
+            role: "ego",
+            iteration,
+            source: "mas",
+            type: "mas.ego.iteration.completed",
+            actor: "ego",
+            payload: { outputChars: finalEgoOutput.length },
           });
         } finally {
           options.signal?.removeEventListener("abort", abortEgo);
           ego.dispose();
         }
 
+        if (egoResult.status === "blocked" || egoResult.status === "needs_attention") {
+          const result = `HA 终验未通过：Ego 未能完成执行。\n\n${egoResult.final_response}`;
+          this.store.updateRun(runId, "needs_attention", { result, egoResult, orchestrationMode: mode.id });
+          sink.done(result);
+          return { runId, result };
+        }
+
         if (!mode.usesSuperego) {
           const result = `HA 终验通过（${mode.name} 模式，未启用 Superego 评审）。\n\n${finalEgoOutput}`;
-          this.store.updateRun(runId, "completed", { result, orchestrationMode: mode.id });
+          this.store.updateRun(runId, "completed", { result, egoResult, orchestrationMode: mode.id });
+          this.store.addEvent({
+            runId,
+            sessionId,
+            source: "mas",
+            type: "mas.run.completed",
+            actor: "ha",
+            payload: { resultKind: "accepted", orchestrationMode: mode.id, usesSuperego: false, egoResult },
+          });
           sink.done(result);
           return { runId, result };
         }
@@ -89,17 +144,20 @@ export class MasRunner {
         const superego = await createPiSession({
           cwd: options.cwd,
           runId,
+          sessionId,
           role: "superego",
+          iteration,
           approvalMode: "deny-writes",
           sink,
           recordApproval: (input) => this.store.addApproval({ runId, ...input }),
+          recordEvent: (input) => this.store.addEvent(input),
         });
         const abortSuperego = () => void superego.abort();
         options.signal?.addEventListener("abort", abortSuperego, { once: true });
         let reviewText = "";
         try {
-          reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, finalEgoOutput));
-          critique = parseCritique(reviewText);
+          reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2)));
+          critique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration);
           this.store.addAgentRun({
             runId,
             role: "superego",
@@ -108,30 +166,187 @@ export class MasRunner {
             input: { prompt, task, contract },
             output: { text: reviewText, critique },
           });
+          this.store.addEvent({
+            runId,
+            sessionId,
+            role: "superego",
+            iteration,
+            source: "mas",
+            type: "mas.superego.review.completed",
+            actor: "superego",
+            payload: critique,
+          });
         } finally {
           options.signal?.removeEventListener("abort", abortSuperego);
           superego.dispose();
         }
 
         sink.thought(`\nSuperego 结论：${critique.summary || critique.next_action}\n`);
+        if (critique.next_action === "escalate") {
+          const result = `HA 终验未通过：Superego 要求人工介入。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
+          this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
+          sink.done(result);
+          return { runId, result };
+        }
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
           const result = `HA 终验通过。\n\n${finalEgoOutput}`;
-          this.store.updateRun(runId, "completed", { result, critique });
+          this.store.updateRun(runId, "completed", { result, critique, egoResult });
+          this.store.addEvent({
+            runId,
+            sessionId,
+            source: "mas",
+            type: "mas.run.completed",
+            actor: "ha",
+            payload: { resultKind: "accepted", orchestrationMode: mode.id, critique, egoResult },
+          });
           sink.done(result);
           return { runId, result };
         }
       }
 
       const result = `HA 终验未通过：达到最大返工轮次。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
-      this.store.updateRun(runId, "needs_attention", { result, critique });
+      this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
+      this.store.addEvent({
+        runId,
+        sessionId,
+        source: "mas",
+        type: "mas.run.needs_attention",
+        actor: "ha",
+        payload: { reason: "max_iterations", critique, egoResult },
+      });
       sink.done(result);
       return { runId, result };
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.store.updateRun(runId, "failed", { message: err.message, stack: err.stack });
+      this.store.addEvent({
+        runId,
+        sessionId,
+        source: "mas",
+        type: "mas.run.failed",
+        actor: "ha",
+        payload: { message: err.message, stack: err.stack },
+      });
       sink.error(err);
       throw err;
     }
+  }
+
+  private async parseEgoWithRepair(
+    rawOutput: string,
+    ego: Awaited<ReturnType<typeof createPiSession>>,
+    prompt: string,
+    task: string,
+    critique: CritiqueResult | undefined,
+    runId: string,
+    iteration: number,
+  ): Promise<EgoResult> {
+    try {
+      return this.parseStructuredOutput("ego_result", rawOutput, ego, parseEgoResult, "Ego");
+    } catch (error) {
+      const firstError = error instanceof Error ? error : new Error(String(error));
+      this.store.addAgentRun({
+        runId,
+        role: "ego",
+        iteration,
+        status: "failed",
+        input: { prompt, task, critique, repair: false },
+        output: { text: rawOutput, error: firstError.message },
+      });
+      this.store.audit({ runId, actor: "ego", action: "result_parse_failed", payload: { message: firstError.message } });
+      ego.clearStructuredOutput("ego_result");
+      const repairText = await ego.prompt(buildEgoRepairPrompt(rawOutput, firstError.message));
+      try {
+        return this.parseStructuredOutput("ego_result", repairText, ego, parseEgoResult, "Ego");
+      } catch (repairError) {
+        const err = repairError instanceof Error ? repairError : new Error(String(repairError));
+        this.store.addAgentRun({
+          runId,
+          role: "ego",
+          iteration,
+          status: "failed",
+          input: { prompt, task, critique, repair: true },
+          output: { text: repairText, error: err.message },
+        });
+        this.store.audit({ runId, actor: "ego", action: "result_repair_failed", payload: { message: err.message } });
+        return {
+          status: "needs_attention",
+          summary: `Ego 执行结果 JSON 解析失败且自修复失败：${err.message}`,
+          final_response: `Ego 已返回执行内容，但 MAS 无法把它稳定解析为结构化结果。\n\n原始输出：\n${rawOutput}`,
+          evidence: [],
+          changed_files: [],
+          verification: [{ command: "", result: "not_run", notes: "Ego 结构化输出解析失败，无法可靠提取验证结果。" }],
+          risks: ["Ego 原始输出未通过结构化 schema 校验，需要人工检查执行结果。"],
+        };
+      }
+    }
+  }
+
+  private async parseSuperegoWithRepair(
+    rawOutput: string,
+    superego: Awaited<ReturnType<typeof createPiSession>>,
+    prompt: string,
+    task: string,
+    contract: string,
+    runId: string,
+    iteration: number,
+  ): Promise<CritiqueResult> {
+    try {
+      return this.parseStructuredOutput("superego_review", rawOutput, superego, parseCritique, "Superego");
+    } catch (error) {
+      const firstError = error instanceof Error ? error : new Error(String(error));
+      this.store.addAgentRun({
+        runId,
+        role: "superego",
+        iteration,
+        status: "failed",
+        input: { prompt, task, contract, repair: false },
+        output: { text: rawOutput, error: firstError.message },
+      });
+      this.store.audit({ runId, actor: "superego", action: "review_parse_failed", payload: { message: firstError.message } });
+      superego.clearStructuredOutput("superego_review");
+      const repairText = await superego.prompt(buildSuperegoRepairPrompt(rawOutput, firstError.message));
+      try {
+        return this.parseStructuredOutput("superego_review", repairText, superego, parseCritique, "Superego");
+      } catch (repairError) {
+        const err = repairError instanceof Error ? repairError : new Error(String(repairError));
+        this.store.addAgentRun({
+          runId,
+          role: "superego",
+          iteration,
+          status: "failed",
+          input: { prompt, task, contract, repair: true },
+          output: { text: repairText, error: err.message },
+        });
+        this.store.audit({ runId, actor: "superego", action: "review_repair_failed", payload: { message: err.message } });
+        return {
+          blocking_issues: 1,
+          quality_score: 0,
+          summary: `Superego 评审结构化输出解析失败且自修复失败：${err.message}`,
+          next_action: "escalate",
+          critique_items: [
+            {
+              category: "schema",
+              severity: "high",
+              suggestion: "请检查 Superego 原始输出和 typed tool 调用，确保 superego_review 参数符合 CritiqueResult schema。",
+            },
+          ],
+        };
+      }
+    }
+  }
+
+  private parseStructuredOutput<T>(
+    toolName: string,
+    rawOutput: string,
+    session: Awaited<ReturnType<typeof createPiSession>>,
+    parseText: (text: string) => T,
+    source: string,
+  ): T {
+    const toolOutput = session.structuredOutput<T>(toolName);
+    if (toolOutput !== undefined) return parseText(JSON.stringify(toolOutput));
+    if (rawOutput.trim()) return parseText(rawOutput);
+    throw new Error(`${source} 未提交 ${toolName} 工具调用，也未输出可解析 JSON`);
   }
 
   static approvalModeFromFlags(flags: { approveAll?: boolean; denyWrites?: boolean }): ApprovalMode {
@@ -146,6 +361,7 @@ export class MasRunner {
     options: MasRunOptions,
     sink: StreamSink,
     runId: string,
+    sessionId: string | undefined,
     mode: (typeof ORCHESTRATION_MODES)[keyof typeof ORCHESTRATION_MODES],
   ): Promise<HaDecision> {
     throwIfAborted(options.signal);
@@ -153,10 +369,13 @@ export class MasRunner {
     const ha = await createPiSession({
       cwd: options.cwd,
       runId,
+      sessionId,
       role: "ha",
+      iteration: 0,
       approvalMode: "deny-writes",
       sink: new InternalSink(sink),
       recordApproval: (input) => this.store.addApproval({ runId, ...input }),
+      recordEvent: (input) => this.store.addEvent(input),
     });
     const abortHa = () => void ha.abort();
     options.signal?.addEventListener("abort", abortHa, { once: true });
@@ -211,6 +430,16 @@ export class MasRunner {
         status: "completed",
         input: { prompt, task, historyTurns: options.conversationHistory?.length ?? 0, orchestrationMode: mode.id },
         output: { text: reviewText, decision, orchestrationMode: mode },
+      });
+      this.store.addEvent({
+        runId,
+        sessionId,
+        role: "ha",
+        iteration: 0,
+        source: "mas",
+        type: "mas.ha.decision.created",
+        actor: "ha",
+        payload: decision,
       });
       this.store.audit({ runId, actor: "ha", action: "route_decided", payload: decision });
       return decision;

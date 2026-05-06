@@ -4,7 +4,7 @@ import { normalizeOrchestrationMode, orchestrationModeList } from "./core/orches
 import { MasRunner } from "./core/runner.js";
 import { loadPiSdk } from "./pi/pi-sdk.js";
 import { MasStore } from "./storage.js";
-import type { PermissionDecision, PermissionRequestInput, StreamSink, ToolEventInput } from "./types.js";
+import type { ApprovalModePolicy, PermissionDecision, PermissionRequestInput, StreamSink, ToolEventInput } from "./types.js";
 
 async function main(): Promise<void> {
   const [rawCommand, ...rawArgs] = process.argv.slice(2);
@@ -16,10 +16,11 @@ async function main(): Promise<void> {
   });
   const maxIterations = Number(flags.get("max-iterations") ?? 3);
   const orchestrationMode = normalizeOrchestrationMode(flags.get("orchestration-mode") ?? flags.get("mode"));
+  const approvalModePolicy = normalizeApprovalModePolicy(flags.get("approval-mode-policy") ?? flags.get("permission-policy"));
 
   switch (command) {
     case "acp":
-      startAcpServer({ approvalMode, maxIterations, orchestrationMode });
+      startAcpServer({ approvalMode, approvalModePolicy, maxIterations, orchestrationMode });
       return;
     case "run": {
       const prompt = positional(args).join(" ").trim();
@@ -145,8 +146,8 @@ function printHelp(): void {
   console.log(`MAS MVP
 
 用法：
-  mas acp [--approve-all] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
-  mas --experimental-acp [--approve-all] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
+  mas acp [--approve-all] [--approval-mode-policy fixed|mutable] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
+  mas --experimental-acp [--approve-all] [--approval-mode-policy fixed|mutable] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
   mas run <task> [--cwd <dir>] [--approve-all] [--deny-writes] [--orchestration-mode ha-ego-superego]
   mas status [--limit 20]
   mas doctor
@@ -159,6 +160,10 @@ ${modes}
 function normalizeCommand(command: string | undefined, args: string[]): [string | undefined, string[]] {
   if (command === "--experimental-acp") return ["acp", args];
   return [command, args];
+}
+
+function normalizeApprovalModePolicy(value: string | boolean | undefined): ApprovalModePolicy {
+  return value === "mutable" ? "mutable" : "fixed";
 }
 
 main().catch((error) => {
