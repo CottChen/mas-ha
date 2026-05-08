@@ -138,6 +138,7 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - HA 是人类助理层，只负责面向用户接收任务、澄清和汇报；后台自主性机制不应由 HA 驱动。
 - Ego / Superego / Id-Dream 负责 MAS 内部自主性：Ego 记录任务过程和结果，Superego 生成与裁剪反思意图，Dream 在低权限、低规约模式下重组 Experience Graph。
 - Experience Graph 是 MAS 长期自主性的核心记忆结构，应串联任务、执行过程、结果、经验、反思和 Dream 裁剪；反思可以递归，但必须受能量预算、拓扑约束和审计约束控制。
+- MAS 自主性调度必须跨会话、全局单实例运行；推荐入口是 `mas autonomy daemon`，通过 SQLite scheduler lease 和任务 claim 避免多个 AionUI 会话重复处理同一任务。
 - Superego 评审必须基于 Ego 自报和 MAS 系统审计证据共同判断；`AuditPacket` 中的工具调用、审批、写入路径和 `changed_files` 对账结果优先级高于 Ego 自报。
 - Superego 默认验收策略是当前状态门禁 + 历史事实留痕：当前仍存在的 `output` 目录外写入、只读输入路径写入或失败验证伪装为成功时必须阻塞；历史已清理的越界写入和 `changed_files` 漏报必须留痕，但不单独作为永久阻塞。
 - Superego 抽样复核应采用分层风险抽样 + 少量随机扰动；snapshot/diff 只能做边界目录轻量元数据 diff + 风险触发深查，不能默认全量重审计。

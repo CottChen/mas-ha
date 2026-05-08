@@ -13,7 +13,10 @@ type RunExperienceInput = {
 };
 
 export class AutonomyLoop {
-  constructor(private readonly store = new MasStore()) {}
+  constructor(
+    private readonly store = new MasStore(),
+    private readonly ownerId = `autonomy-${process.pid}`,
+  ) {}
 
   recordTaskClosure(input: RunExperienceInput): void {
     const taskNodeId = this.store.addExperienceNode({
@@ -82,7 +85,7 @@ export class AutonomyLoop {
   }
 
   runDueReflections(limit = 20): { processed: number; completed: ReflectionTask[]; cancelled: ReflectionTask[] } {
-    const due = this.store.listDueReflectionTasks(new Date().toISOString(), limit);
+    const due = this.store.claimDueReflectionTasks({ ownerId: this.ownerId, limit });
     const completed: ReflectionTask[] = [];
     const cancelled: ReflectionTask[] = [];
     for (const task of due) {

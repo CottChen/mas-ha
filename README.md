@@ -27,27 +27,29 @@ MAS 当前把任务执行拆成四类内部责任：
 - Superego：评审层，负责基于验收合同、Ego 结果和系统审计证据判断是否接受、返工或升级人工介入。
 - Id / Dream：低权限反思层，用于后续重组 Experience Graph、裁剪低价值反思和沉淀长期经验。
 
-任务结束后，MAS 会把任务、结果、经验和未来反思意图写入 Experience Graph。反思任务写入 `reflection_tasks`，可由 `mas reflect due`、外部 cron 或 ACP 进程内 Node.js timer 唤醒。
+任务结束后，MAS 会把任务、结果、经验和未来反思意图写入 Experience Graph。反思任务写入 `reflection_tasks`，由全局 Node.js autonomy scheduler 跨会话唤醒。
 
-ACP 进程内启用实时反思扫描：
+推荐启动全局自主性调度器：
 
 ```bash
-/home/admin/mas-impl/bin/mas acp --reflection-scheduler --reflection-interval 60000
+./bin/mas autonomy daemon --interval 60000
 ```
 
 反思相关命令：
 
 ```bash
+./bin/mas autonomy status
+./bin/mas autonomy tick
 ./bin/mas reflect list
 ./bin/mas reflect due
 ./bin/mas reflect dream
 ```
 
-Windows / AionUI 外部定时任务可以每 10 分钟触发一次到期反思：
+Windows / AionUI 环境可以单独启动全局调度器：
 
 ```text
 cd C:\Users\Administrator\projects\mas-ha-orchestration
-C:\Users\Administrator\custom\mas-ha-orchestration-acp-gitbash.cmd reflect due
+C:\Users\Administrator\custom\mas-ha-orchestration-acp-gitbash.cmd autonomy daemon --interval 60000
 ```
 
 完整设计见 [MAS 自主性设计记录](docs/AUTONOMY.md)，具体待办见 [MAS 自主性待办](docs/AUTONOMY_TODO.md)。

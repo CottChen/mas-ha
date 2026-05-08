@@ -4,7 +4,7 @@
 
 ## 最小闭环
 
-- [ ] 为 `mas reflect due` 增加端到端回归测试，覆盖 scheduled -> completed / cancelled。
+- [ ] 为 `mas autonomy tick` / `mas reflect due` 增加端到端回归测试，覆盖 scheduled -> running -> completed / cancelled。
 - [ ] 为 `mas reflect dream` 增加裁剪回归测试，覆盖预算耗尽节点进入 `pruned`。
 - [ ] 在任务结束后的 Experience Graph 写入中补充 `execution_trace` 节点，串联关键工具调用和验证命令。
 - [ ] 为 `reflection_tasks` 增加幂等保护，避免同一个 run 结束路径重复创建反思任务。
@@ -28,6 +28,7 @@
 ## Dream 模式
 
 - [ ] 定义 `DreamGraphPatch` typed tool schema。
+- [ ] 将 Dream 从手动 `mas reflect dream` 升级为 `autonomy_jobs` 中的 `dream` 类型，由全局 scheduler 到期唤醒。
 - [ ] Dream 只允许操作 Experience Graph，不允许外部工具、用户工作区写入和新建嵌套反思。
 - [ ] 增加图复杂度阈值，超过阈值时强制进入 Dream 裁剪。
 - [ ] 增加边权衰减、节点合并、重复经验抽象和低价值节点裁剪。
@@ -43,12 +44,15 @@
 
 - [x] 文档化外部 cron 调用 `mas reflect due` 的推荐方式。
 - [x] 提供 Node.js timer 作为 ACP 进程内的外部唤醒源，避免完全依赖 AionUI 会话级 cron。
+- [x] 增加全局 Node.js autonomy daemon 入口，使用 SQLite scheduler lease 作为跨会话单实例调度器。
+- [x] 增加 scheduled -> running 的原子 claim，避免多调度源重复处理同一反思任务。
 - [ ] 为 Node.js timer 调度增加回归测试，覆盖 tick 调用 due reflection 和 dream prune。
-- [ ] 增加 scheduled -> running 的原子 claim，避免多调度源重复处理同一反思任务。
+- [ ] 将 `reflection_tasks` 泛化为统一 `autonomy_jobs`，覆盖 `reflection | dream | prune | consolidation`。
 - [ ] 为后台反思和 Dream 增加独立审计事件，确保用户能追踪每次自动唤醒。
 
 ## 记忆和能力提升
 
+- [ ] 实现 `MemoryArtifact` 检索接口，让 HA/Ego/Superego 能消费 reflection/dream/prune/consolidation 的产物。
 - [ ] 将高置信经验沉淀到项目文档、技能或测试，而不是只保存在 SQLite。
 - [ ] 设计 Experience Graph 检索接口，让 Ego/Superego 能感知相关历史经验。
 - [ ] 明确哪些节点不可被 Dream 删除，例如用户明确规则、审计记录和安全边界。

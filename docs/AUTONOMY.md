@@ -67,17 +67,103 @@ Dream 模式是低权限、低规约模式。
 - 创建新的定时嵌套反思。
 - 直接向用户发送任务结果。
 
-## 当前最小闭环
+## 全局自主性调度器
+
+自主性是跨会话机制，不属于某个 AionUI ACP 会话。AionUI 会话只产生任务结果、经验和反思意图；真正的唤醒、裁剪和做梦由全局 Node.js 调度器统一处理。
+
+推荐入口：
+
+```bash
+mas autonomy daemon --interval 60000
+```
+
+辅助入口：
+
+```bash
+mas autonomy tick
+mas autonomy status
+```
+
+调度器使用 SQLite `scheduler_leases` 维护全局租约：
+
+- `name = global-autonomy-scheduler`
+- `owner_id` 标识当前 daemon。
+- `heartbeat_at` / `expires_at` 控制接管。
+- 同一时刻只有持有未过期 lease 的进程处理自主性任务。
+
+每次 tick 是一个多路复用调度周期：
+
+1. 尝试 claim 全局 scheduler lease。
+2. 原子 claim 到期 reflection 任务，将 `scheduled` 改为 `running`。
+3. 处理 reflection 任务并写入 Experience Graph。
+4. 触发 Dream/Prune 裁剪预算耗尽的任务。
+5. 写入审计日志和 heartbeat。
+
+`reflection_tasks` 已使用 claim 模式，避免多个调度源重复处理同一到期任务。后续会把 `reflection_tasks` 泛化为统一的 `autonomy_jobs`：
+
+```text
+reflection | dream | prune | consolidation
+```
+
+## 自主任务产物
+
+这些任务完成后的产物不是面向用户的回复，而是 Experience Graph 的结构变化、可检索经验资产和调度决策。
+
+统一产物模型：
+
+```ts
+AutonomyJobResult {
+  jobId: string;
+  type: "reflection" | "dream" | "prune" | "consolidation";
+  decision: "complete" | "reschedule" | "cancel" | "escalate";
+  summary: string;
+  graphOps: GraphOperation[];
+  memoryArtifacts: MemoryArtifact[];
+  followupJobs: AutonomyJobSpec[];
+  confidence: number;
+  evidence: string[];
+}
+```
+
+`MemoryArtifact` 是未来 HA / Ego / Superego 可检索和注入的低熵经验：
+
+```ts
+MemoryArtifact {
+  kind: "lesson" | "risk" | "pattern" | "rule_candidate" | "test_candidate" | "doc_candidate" | "hypothesis";
+  scope: "task" | "project" | "global";
+  content: string;
+  confidence: number;
+  sourceNodeIds: string[];
+  activationHints: string[];
+}
+```
+
+使用路径：
+
+- HA：生成验收合同时检索相似任务经验、边界规则和用户偏好。
+- Ego：执行前检索历史失败模式、环境约束和推荐操作策略。
+- Superego：评审前检索审计规则、抽样策略和历史风险。
+- Scheduler：根据 `followupJobs`、`decision` 和预算继续调度、取消或裁剪任务。
+- Consolidation：高置信、多次命中的经验才晋升为 `AGENTS.md` 规则、`docs/` 文档或 smoke/test。
+
+各类任务职责：
+
+- Reflection 产生单任务经验、风险和后续调度决策。
+- Dream 重组跨任务经验，生成主题、假设、合并和图裁剪建议。
+- Prune 控制复杂度，软删除低价值节点或降低边权。
+- Consolidation 把多次重复验证的经验固化为规则、文档候选或测试候选。
+
+## 最小闭环
 
 当前实现先打通最小闭环：
 
 1. 任务结束后，Ego/Superego 结果被写入 Experience Graph。
 2. Superego 生成一个 `reflection_tasks` 记录，包含触发时间和预算。
-3. 外部调度器可以定时调用 `mas reflect due`。
+3. 全局 Node.js 调度器可以周期性执行 `mas autonomy tick` 等价逻辑。
 4. 到期反思会根据是否有新信号和预算决定完成或取消。
 5. `mas reflect dream` 会裁剪已经耗尽预算的反思任务。
 
-调度入口统一为 `mas reflect due` 或等价的 `AutonomyLoop.runDueReflections()`；Node.js timer、AionUI cron、系统 cron 和人工命令都只是外部唤醒源，不直接决定 Experience Graph。
+调度入口统一为 `AutonomyLoop.runDueReflections()` 和全局 `mas autonomy daemon`；AionUI cron、系统 cron 和人工命令只作为调试或备用唤醒源，不作为推荐主路径。
 
 当前 CLI：
 
@@ -93,7 +179,7 @@ ACP 进程也可以启用 Node.js timer 作为内嵌外部唤醒源：
 mas acp --reflection-scheduler --reflection-interval 60000
 ```
 
-该 timer 只定期扫描 `reflection_tasks` 的到期任务，并可同时触发低权限 Dream 裁剪；真实调度状态仍以 SQLite 为准。
+该 timer 仅保留为开发/备用模式。正常跨会话自主性应使用全局 `mas autonomy daemon`，避免每个 ACP 会话都启动自己的 timer。真实调度状态仍以 SQLite lease 和任务状态为准。
 
 ## Superego 审计包
 

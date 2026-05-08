@@ -11,6 +11,8 @@ export type MasEventActor = RoleName | "system" | "user" | "tool" | "pi";
 export type ExperienceNodeType = "task" | "execution_trace" | "result" | "experience" | "reflection" | "dream";
 export type ExperienceEdgeType = "caused" | "produced" | "generalized_to" | "scheduled" | "reflected_on" | "dream_pruned";
 export type ReflectionStatus = "scheduled" | "running" | "completed" | "cancelled" | "pruned";
+export type AutonomyJobType = "reflection" | "dream" | "prune" | "consolidation";
+export type AutonomyJobDecision = "complete" | "reschedule" | "cancel" | "escalate";
 
 export interface MasEventInput {
   runId: string;
@@ -64,9 +66,40 @@ export interface ReflectionTask extends Required<Omit<ReflectionTaskInput, "sour
   parentReflectionId?: string;
   status: ReflectionStatus;
   wakeups: number;
+  ownerId?: string;
+  leaseUntil?: string;
   payload?: unknown;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SchedulerLease {
+  name: string;
+  ownerId: string;
+  heartbeatAt: string;
+  expiresAt: string;
+  metadata?: unknown;
+}
+
+export interface MemoryArtifact {
+  kind: "lesson" | "risk" | "pattern" | "rule_candidate" | "test_candidate" | "doc_candidate" | "hypothesis";
+  scope: "task" | "project" | "global";
+  content: string;
+  confidence: number;
+  sourceNodeIds: string[];
+  activationHints: string[];
+}
+
+export interface AutonomyJobResult {
+  jobId: string;
+  type: AutonomyJobType;
+  decision: AutonomyJobDecision;
+  summary: string;
+  graphOps: unknown[];
+  memoryArtifacts: MemoryArtifact[];
+  followupJobs: unknown[];
+  confidence: number;
+  evidence: string[];
 }
 
 export interface MasRunOptions {

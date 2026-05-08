@@ -13,6 +13,7 @@ import type {
   ReflectionTask,
   ReflectionTaskInput,
   RoleName,
+  SchedulerLease,
 } from "./types.js";
 
 export class MasStore {
@@ -135,13 +136,24 @@ export class MasStore {
         max_children INTEGER NOT NULL,
         max_wakeups INTEGER NOT NULL,
         allow_nested INTEGER NOT NULL,
+        owner_id TEXT,
+        lease_until TEXT,
         payload_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_reflection_tasks_due ON reflection_tasks (status, trigger_at);
       CREATE INDEX IF NOT EXISTS idx_reflection_tasks_source_run ON reflection_tasks (source_run_id);
+      CREATE TABLE IF NOT EXISTS scheduler_leases (
+        name TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        metadata_json TEXT
+      );
     `);
+    this.ensureColumn("reflection_tasks", "owner_id", "TEXT");
+    this.ensureColumn("reflection_tasks", "lease_until", "TEXT");
   }
 
   close(): void {
@@ -408,11 +420,50 @@ export class MasStore {
     return reflectionId;
   }
 
+  claimDueReflectionTasks(input: { ownerId: string; now?: string; limit?: number; leaseMs?: number }): ReflectionTask[] {
+    const now = input.now ?? new Date().toISOString();
+    const leaseUntil = new Date(Date.parse(now) + (input.leaseMs ?? 5 * 60_000)).toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT reflection_id
+         FROM reflection_tasks
+         WHERE status = 'scheduled' AND trigger_at <= ?
+         ORDER BY trigger_at ASC
+         LIMIT ?`,
+      )
+      .all(now, input.limit ?? 20) as Array<{ reflection_id: string }>;
+    const claimed: ReflectionTask[] = [];
+    for (const row of rows) {
+      const result = this.db
+        .prepare(
+          `UPDATE reflection_tasks
+           SET status = 'running', owner_id = ?, lease_until = ?, updated_at = ?
+           WHERE reflection_id = ? AND status = 'scheduled' AND trigger_at <= ?`,
+        )
+        .run(input.ownerId, leaseUntil, now, row.reflection_id, now) as { changes?: number };
+      if ((result.changes ?? 0) !== 1) continue;
+      const task = this.getReflectionTask(row.reflection_id);
+      if (task) claimed.push(task);
+    }
+    return claimed;
+  }
+
+  getReflectionTask(reflectionId: string): ReflectionTask | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, owner_id, lease_until, payload_json, created_at, updated_at
+         FROM reflection_tasks WHERE reflection_id = ?`,
+      )
+      .get(reflectionId) as ReflectionTaskRow | undefined;
+    return row ? toReflectionTask(row) : undefined;
+  }
+
   listDueReflectionTasks(now = new Date().toISOString(), limit = 20): ReflectionTask[] {
     const rows = this.db
       .prepare(
         `SELECT reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
-          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, owner_id, lease_until, payload_json, created_at, updated_at
          FROM reflection_tasks
          WHERE status = 'scheduled' AND trigger_at <= ?
          ORDER BY trigger_at ASC
@@ -425,10 +476,10 @@ export class MasStore {
   listReflectionTasks(status?: ReflectionStatus, limit = 20): ReflectionTask[] {
     const sql = status
       ? `SELECT reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
-          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, owner_id, lease_until, payload_json, created_at, updated_at
          FROM reflection_tasks WHERE status = ? ORDER BY trigger_at ASC LIMIT ?`
       : `SELECT reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
-          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, owner_id, lease_until, payload_json, created_at, updated_at
          FROM reflection_tasks ORDER BY trigger_at ASC LIMIT ?`;
     const rows = (status ? this.db.prepare(sql).all(status, limit) : this.db.prepare(sql).all(limit)) as ReflectionTaskRow[];
     return rows.map(toReflectionTask);
@@ -445,7 +496,7 @@ export class MasStore {
     this.db
       .prepare(
         `UPDATE reflection_tasks
-         SET status = ?, trigger_at = COALESCE(?, trigger_at), wakeups = ?, payload_json = ?, updated_at = ?
+         SET status = ?, trigger_at = COALESCE(?, trigger_at), wakeups = ?, owner_id = NULL, lease_until = NULL, payload_json = ?, updated_at = ?
          WHERE reflection_id = ?`,
       )
       .run(
@@ -456,6 +507,44 @@ export class MasStore {
         new Date().toISOString(),
         reflectionId,
       );
+  }
+
+  acquireSchedulerLease(input: { name: string; ownerId: string; ttlMs: number; metadata?: unknown }): boolean {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + input.ttlMs).toISOString();
+    const current = this.db.prepare("SELECT owner_id, expires_at FROM scheduler_leases WHERE name = ?").get(input.name) as
+      | { owner_id: string; expires_at: string }
+      | undefined;
+    if (!current) {
+      this.db
+        .prepare("INSERT INTO scheduler_leases (name, owner_id, heartbeat_at, expires_at, metadata_json) VALUES (?, ?, ?, ?, ?)")
+        .run(input.name, input.ownerId, nowIso, expiresAt, stringifyJson(input.metadata));
+      return true;
+    }
+    if (current.owner_id !== input.ownerId && current.expires_at > nowIso) return false;
+    const result = this.db
+      .prepare(
+        `UPDATE scheduler_leases
+         SET owner_id = ?, heartbeat_at = ?, expires_at = ?, metadata_json = ?
+         WHERE name = ? AND (owner_id = ? OR expires_at <= ?)`,
+      )
+      .run(input.ownerId, nowIso, expiresAt, stringifyJson(input.metadata), input.name, input.ownerId, nowIso) as { changes?: number };
+    return (result.changes ?? 0) === 1;
+  }
+
+  getSchedulerLease(name: string): SchedulerLease | undefined {
+    const row = this.db.prepare("SELECT name, owner_id, heartbeat_at, expires_at, metadata_json FROM scheduler_leases WHERE name = ?").get(name) as
+      | { name: string; owner_id: string; heartbeat_at: string; expires_at: string; metadata_json: string | null }
+      | undefined;
+    if (!row) return undefined;
+    return {
+      name: row.name,
+      ownerId: row.owner_id,
+      heartbeatAt: row.heartbeat_at,
+      expiresAt: row.expires_at,
+      metadata: parseJson(row.metadata_json),
+    };
   }
 
   dreamPruneReflectionTasks(limit = 20): number {
@@ -490,6 +579,12 @@ export class MasStore {
       if (assistant) turns.push({ role: "assistant", content: assistant });
     }
     return turns;
+  }
+
+  private ensureColumn(table: string, column: string, type: string): void {
+    const rows = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (rows.some((row) => row.name === column)) return;
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   }
 
   addMessage(input: { sessionId: string; role: ConversationTurn["role"]; content: string; metadata?: unknown }): number {
@@ -625,6 +720,8 @@ type ReflectionTaskRow = {
   max_children: number;
   max_wakeups: number;
   allow_nested: number;
+  owner_id: string | null;
+  lease_until: string | null;
   payload_json: string | null;
   created_at: string;
   updated_at: string;
@@ -645,6 +742,8 @@ function toReflectionTask(row: ReflectionTaskRow): ReflectionTask {
     maxChildren: row.max_children,
     maxWakeups: row.max_wakeups,
     allowNested: row.allow_nested === 1,
+    ownerId: row.owner_id ?? undefined,
+    leaseUntil: row.lease_until ?? undefined,
     payload: parseJson(row.payload_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

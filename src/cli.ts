@@ -2,6 +2,7 @@
 import { startAcpServer } from "./acp/server.js";
 import { AutonomyLoop } from "./core/autonomy.js";
 import { normalizeOrchestrationMode, orchestrationModeList } from "./core/orchestration.js";
+import { ReflectionScheduler } from "./core/reflection-scheduler.js";
 import { MasRunner } from "./core/runner.js";
 import { loadPiSdk } from "./pi/pi-sdk.js";
 import { MasStore } from "./storage.js";
@@ -64,6 +65,10 @@ async function main(): Promise<void> {
     }
     case "reflect": {
       await reflect(args, flags);
+      return;
+    }
+    case "autonomy": {
+      await autonomy(args, flags);
       return;
     }
     case undefined:
@@ -171,6 +176,7 @@ function printHelp(): void {
   mas run <task> [--cwd <dir>] [--approve-all] [--deny-writes] [--orchestration-mode ha-ego-superego]
   mas status [--limit 20]
   mas reflect due|list|dream [--limit 20]
+  mas autonomy daemon|tick|status [--interval 60000] [--limit 20]
   mas doctor
 
 编排模式：
@@ -182,7 +188,7 @@ async function reflect(args: string[], flags: Map<string, string | boolean>): Pr
   const [subcommand = "due"] = positional(args);
   const limit = Number(flags.get("limit") ?? 20);
   const store = new MasStore();
-  const loop = new AutonomyLoop(store);
+  const loop = new AutonomyLoop(store, `manual-reflect-${process.pid}`);
   if (subcommand === "due") {
     console.log(JSON.stringify(loop.runDueReflections(limit), null, 2));
     return;
@@ -197,6 +203,63 @@ async function reflect(args: string[], flags: Map<string, string | boolean>): Pr
     return;
   }
   throw new Error(`未知 reflect 子命令：${subcommand}`);
+}
+
+async function autonomy(args: string[], flags: Map<string, string | boolean>): Promise<void> {
+  const [subcommand = "status"] = positional(args);
+  const intervalMs = Number(flags.get("interval") ?? flags.get("reflection-interval") ?? 60_000);
+  const limit = Number(flags.get("limit") ?? flags.get("reflection-due-limit") ?? 20);
+  const dreamLimit = Number(flags.get("dream-limit") ?? flags.get("reflection-dream-limit") ?? 20);
+  const runDream = !flags.has("no-dream") && !flags.has("no-reflection-dream");
+  const store = new MasStore();
+  if (subcommand === "tick") {
+    const scheduler = new ReflectionScheduler(store, {
+      intervalMs,
+      dueLimit: limit,
+      dreamLimit,
+      runDream,
+      ownerId: `manual-autonomy-tick-${process.pid}`,
+      unrefTimer: false,
+    });
+    console.log(JSON.stringify(scheduler.tick(), null, 2));
+    return;
+  }
+  if (subcommand === "status") {
+    console.log(
+      JSON.stringify(
+        {
+          lease: store.getSchedulerLease("global-autonomy-scheduler"),
+          scheduled: store.listReflectionTasks("scheduled", limit),
+          running: store.listReflectionTasks("running", limit),
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  if (subcommand === "daemon") {
+    const scheduler = new ReflectionScheduler(store, {
+      intervalMs,
+      dueLimit: limit,
+      dreamLimit,
+      runDream,
+      ownerId: `autonomy-daemon-${process.pid}`,
+      unrefTimer: false,
+    });
+    scheduler.start();
+    process.stderr.write(`MAS autonomy daemon started. owner=${scheduler.ownerId}, interval=${intervalMs}ms\n`);
+    await new Promise<void>((resolve) => {
+      const stop = () => {
+        scheduler.stop();
+        resolve();
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    });
+    return;
+  }
+  throw new Error(`未知 autonomy 子命令：${subcommand}`);
 }
 
 function normalizeCommand(command: string | undefined, args: string[]): [string | undefined, string[]] {
