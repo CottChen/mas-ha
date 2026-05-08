@@ -2,7 +2,18 @@ import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { ensureMasDirs, MAS_DATA_DIR } from "./config.js";
-import type { ConversationContext, ConversationTurn, MasEvent, MasEventInput, RoleName } from "./types.js";
+import type {
+  ConversationContext,
+  ConversationTurn,
+  ExperienceEdgeType,
+  ExperienceNodeInput,
+  MasEvent,
+  MasEventInput,
+  ReflectionStatus,
+  ReflectionTask,
+  ReflectionTaskInput,
+  RoleName,
+} from "./types.js";
 
 export class MasStore {
   private readonly db: DatabaseSync;
@@ -10,6 +21,7 @@ export class MasStore {
   constructor(path = join(MAS_DATA_DIR, "mas.sqlite")) {
     ensureMasDirs();
     this.db = new DatabaseSync(path);
+    this.db.exec("PRAGMA busy_timeout=5000");
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
@@ -85,7 +97,55 @@ export class MasStore {
         summarized_message_id INTEGER NOT NULL,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS experience_nodes (
+        node_id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        run_id TEXT,
+        status TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        payload_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_experience_nodes_run ON experience_nodes (run_id);
+      CREATE INDEX IF NOT EXISTS idx_experience_nodes_type ON experience_nodes (type);
+      CREATE TABLE IF NOT EXISTS experience_edges (
+        edge_id TEXT PRIMARY KEY,
+        from_node_id TEXT NOT NULL,
+        to_node_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        weight REAL NOT NULL,
+        confidence REAL NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_experience_edges_from ON experience_edges (from_node_id);
+      CREATE INDEX IF NOT EXISTS idx_experience_edges_to ON experience_edges (to_node_id);
+      CREATE TABLE IF NOT EXISTS reflection_tasks (
+        reflection_id TEXT PRIMARY KEY,
+        source_run_id TEXT NOT NULL,
+        source_node_id TEXT,
+        parent_reflection_id TEXT,
+        status TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        trigger_at TEXT NOT NULL,
+        depth INTEGER NOT NULL,
+        wakeups INTEGER NOT NULL,
+        max_depth INTEGER NOT NULL,
+        max_children INTEGER NOT NULL,
+        max_wakeups INTEGER NOT NULL,
+        allow_nested INTEGER NOT NULL,
+        payload_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_reflection_tasks_due ON reflection_tasks (status, trigger_at);
+      CREATE INDEX IF NOT EXISTS idx_reflection_tasks_source_run ON reflection_tasks (source_run_id);
     `);
+  }
+
+  close(): void {
+    this.db.close();
   }
 
   createRun(input: { runId: string; sessionId?: string; cwd: string; prompt: string }): void {
@@ -141,6 +201,31 @@ export class MasStore {
         input.rawInput === undefined ? null : JSON.stringify(input.rawInput),
         new Date().toISOString(),
       );
+  }
+
+  listApprovals(runId: string): Array<{
+    toolCallId: string;
+    toolName: string;
+    decision: string;
+    rawInput?: unknown;
+    createdAt: string;
+  }> {
+    const rows = this.db
+      .prepare("SELECT tool_call_id, tool_name, decision, raw_input_json, created_at FROM approvals WHERE run_id = ? ORDER BY id ASC")
+      .all(runId) as Array<{
+      tool_call_id: string;
+      tool_name: string;
+      decision: string;
+      raw_input_json: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      toolCallId: row.tool_call_id,
+      toolName: row.tool_name,
+      decision: row.decision,
+      rawInput: parseJson(row.raw_input_json),
+      createdAt: row.created_at,
+    }));
   }
 
   audit(input: { runId: string; actor: string; action: string; target?: string; payload?: unknown }): void {
@@ -240,6 +325,153 @@ export class MasStore {
     return this.db
       .prepare("SELECT run_id, session_id, cwd, status, prompt, result, created_at, updated_at FROM runs ORDER BY created_at DESC LIMIT ?")
       .all(limit);
+  }
+
+  addExperienceNode(input: ExperienceNodeInput): string {
+    const now = new Date().toISOString();
+    const nodeId = input.nodeId ?? randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO experience_nodes (node_id, type, run_id, status, title, summary, payload_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(node_id) DO UPDATE SET
+           status = excluded.status,
+           title = excluded.title,
+           summary = excluded.summary,
+           payload_json = excluded.payload_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        nodeId,
+        input.type,
+        input.runId ?? null,
+        input.status ?? "active",
+        input.title,
+        input.summary,
+        stringifyJson(input.payload),
+        now,
+        now,
+      );
+    return nodeId;
+  }
+
+  addExperienceEdge(input: {
+    fromNodeId: string;
+    toNodeId: string;
+    type: ExperienceEdgeType;
+    weight?: number;
+    confidence?: number;
+  }): string {
+    const edgeId = randomUUID();
+    this.db
+      .prepare(
+        "INSERT INTO experience_edges (edge_id, from_node_id, to_node_id, type, weight, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(edgeId, input.fromNodeId, input.toNodeId, input.type, input.weight ?? 1, input.confidence ?? 0.8, new Date().toISOString());
+    return edgeId;
+  }
+
+  addReflectionTask(input: ReflectionTaskInput): string {
+    const now = new Date().toISOString();
+    const reflectionId = input.reflectionId ?? randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO reflection_tasks (
+          reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(reflection_id) DO UPDATE SET
+          status = excluded.status,
+          purpose = excluded.purpose,
+          trigger_at = excluded.trigger_at,
+          payload_json = excluded.payload_json,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        reflectionId,
+        input.sourceRunId,
+        input.sourceNodeId ?? null,
+        input.parentReflectionId ?? null,
+        "scheduled",
+        input.purpose,
+        input.triggerAt,
+        input.depth ?? 0,
+        0,
+        input.maxDepth ?? 2,
+        input.maxChildren ?? 2,
+        input.maxWakeups ?? 2,
+        input.allowNested === false ? 0 : 1,
+        stringifyJson(input.payload),
+        now,
+        now,
+      );
+    return reflectionId;
+  }
+
+  listDueReflectionTasks(now = new Date().toISOString(), limit = 20): ReflectionTask[] {
+    const rows = this.db
+      .prepare(
+        `SELECT reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+         FROM reflection_tasks
+         WHERE status = 'scheduled' AND trigger_at <= ?
+         ORDER BY trigger_at ASC
+         LIMIT ?`,
+      )
+      .all(now, limit) as ReflectionTaskRow[];
+    return rows.map(toReflectionTask);
+  }
+
+  listReflectionTasks(status?: ReflectionStatus, limit = 20): ReflectionTask[] {
+    const sql = status
+      ? `SELECT reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+         FROM reflection_tasks WHERE status = ? ORDER BY trigger_at ASC LIMIT ?`
+      : `SELECT reflection_id, source_run_id, source_node_id, parent_reflection_id, status, purpose, trigger_at,
+          depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+         FROM reflection_tasks ORDER BY trigger_at ASC LIMIT ?`;
+    const rows = (status ? this.db.prepare(sql).all(status, limit) : this.db.prepare(sql).all(limit)) as ReflectionTaskRow[];
+    return rows.map(toReflectionTask);
+  }
+
+  updateReflectionTask(
+    reflectionId: string,
+    input: { status: ReflectionStatus; payload?: unknown; triggerAt?: string; incrementWakeups?: boolean },
+  ): void {
+    const current = this.db.prepare("SELECT wakeups, payload_json FROM reflection_tasks WHERE reflection_id = ?").get(reflectionId) as
+      | { wakeups: number; payload_json: string | null }
+      | undefined;
+    if (!current) return;
+    this.db
+      .prepare(
+        `UPDATE reflection_tasks
+         SET status = ?, trigger_at = COALESCE(?, trigger_at), wakeups = ?, payload_json = ?, updated_at = ?
+         WHERE reflection_id = ?`,
+      )
+      .run(
+        input.status,
+        input.triggerAt ?? null,
+        current.wakeups + (input.incrementWakeups ? 1 : 0),
+        stringifyJson(input.payload ?? parseJson(current.payload_json)),
+        new Date().toISOString(),
+        reflectionId,
+      );
+  }
+
+  dreamPruneReflectionTasks(limit = 20): number {
+    const rows = this.db
+      .prepare(
+        `SELECT reflection_id
+         FROM reflection_tasks
+         WHERE status = 'scheduled' AND (wakeups >= max_wakeups OR depth >= max_depth)
+         ORDER BY trigger_at ASC
+         LIMIT ?`,
+      )
+      .all(limit) as Array<{ reflection_id: string }>;
+    for (const row of rows) {
+      this.updateReflectionTask(row.reflection_id, { status: "pruned", payload: { prunedBy: "dream", reason: "budget_exhausted" } });
+    }
+    return rows.length;
   }
 
   getConversationHistory(sessionId: string, limit = 12): ConversationTurn[] {
@@ -377,4 +609,44 @@ function parseJson(value: string | null): unknown {
   } catch {
     return value;
   }
+}
+
+type ReflectionTaskRow = {
+  reflection_id: string;
+  source_run_id: string;
+  source_node_id: string | null;
+  parent_reflection_id: string | null;
+  status: ReflectionStatus;
+  purpose: string;
+  trigger_at: string;
+  depth: number;
+  wakeups: number;
+  max_depth: number;
+  max_children: number;
+  max_wakeups: number;
+  allow_nested: number;
+  payload_json: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function toReflectionTask(row: ReflectionTaskRow): ReflectionTask {
+  return {
+    reflectionId: row.reflection_id,
+    sourceRunId: row.source_run_id,
+    sourceNodeId: row.source_node_id ?? undefined,
+    parentReflectionId: row.parent_reflection_id ?? undefined,
+    status: row.status,
+    purpose: row.purpose,
+    triggerAt: row.trigger_at,
+    depth: row.depth,
+    wakeups: row.wakeups,
+    maxDepth: row.max_depth,
+    maxChildren: row.max_children,
+    maxWakeups: row.max_wakeups,
+    allowNested: row.allow_nested === 1,
+    payload: parseJson(row.payload_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }

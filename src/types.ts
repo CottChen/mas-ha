@@ -8,6 +8,9 @@ export type { OrchestrationMode } from "./core/orchestration.js";
 
 export type MasEventSource = "mas" | "pi";
 export type MasEventActor = RoleName | "system" | "user" | "tool" | "pi";
+export type ExperienceNodeType = "task" | "execution_trace" | "result" | "experience" | "reflection" | "dream";
+export type ExperienceEdgeType = "caused" | "produced" | "generalized_to" | "scheduled" | "reflected_on" | "dream_pruned";
+export type ReflectionStatus = "scheduled" | "running" | "completed" | "cancelled" | "pruned";
 
 export interface MasEventInput {
   runId: string;
@@ -29,6 +32,41 @@ export interface MasEvent extends MasEventInput {
   eventId: string;
   sequence: number;
   createdAt: string;
+}
+
+export interface ExperienceNodeInput {
+  nodeId?: string;
+  type: ExperienceNodeType;
+  runId?: string;
+  status?: string;
+  title: string;
+  summary: string;
+  payload?: unknown;
+}
+
+export interface ReflectionTaskInput {
+  reflectionId?: string;
+  sourceRunId: string;
+  sourceNodeId?: string;
+  parentReflectionId?: string;
+  purpose: string;
+  triggerAt: string;
+  depth?: number;
+  maxDepth?: number;
+  maxChildren?: number;
+  maxWakeups?: number;
+  allowNested?: boolean;
+  payload?: unknown;
+}
+
+export interface ReflectionTask extends Required<Omit<ReflectionTaskInput, "sourceNodeId" | "parentReflectionId" | "payload">> {
+  sourceNodeId?: string;
+  parentReflectionId?: string;
+  status: ReflectionStatus;
+  wakeups: number;
+  payload?: unknown;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface MasRunOptions {
@@ -80,6 +118,106 @@ export interface CritiqueResult {
     severity: "low" | "medium" | "high";
     suggestion: string;
   }>;
+}
+
+export interface AuditFinding {
+  category: string;
+  severity: "low" | "medium" | "high";
+  message: string;
+  evidence: string[];
+}
+
+export type BoundaryScopeKind = "readonly_input" | "output" | "workspace_root";
+
+export interface BoundaryFileMetadata {
+  path: string;
+  type: "file" | "dir";
+  size: number;
+  mtimeMs: number;
+}
+
+export interface BoundarySnapshotScope {
+  kind: BoundaryScopeKind;
+  path: string;
+  exists: boolean;
+  depth: number;
+  fileCount: number;
+  dirCount: number;
+  truncated: boolean;
+  entries: BoundaryFileMetadata[];
+}
+
+export interface BoundarySnapshot {
+  createdAt: string;
+  cwd: string;
+  scopes: BoundarySnapshotScope[];
+}
+
+export interface BoundaryDiff {
+  baselineAt: string;
+  comparedAt: string;
+  scopes: Array<{
+    kind: BoundaryScopeKind;
+    path: string;
+    created: BoundaryFileMetadata[];
+    modified: Array<{ before: BoundaryFileMetadata; after: BoundaryFileMetadata }>;
+    deleted: BoundaryFileMetadata[];
+    truncated: boolean;
+  }>;
+  readonlyCreated: string[];
+  readonlyModified: string[];
+  readonlyDeleted: string[];
+  outputCreated: string[];
+  outputModified: string[];
+  outputDeleted: string[];
+  suspiciousCreatedOutsideOutput: string[];
+  suspiciousModifiedOutsideOutput: string[];
+  suspiciousDeletedOutsideOutput: string[];
+}
+
+export interface AuditPacket {
+  cwd: string;
+  outputDir: string;
+  suggestedSamplingStrategy: {
+    objective: string;
+    rules: string[];
+    taskHints: string[];
+    randomization: {
+      seedHint: string;
+      strategy: string;
+    };
+  };
+  boundaryDiffPolicy: {
+    mode: "lightweight_boundary_metadata";
+    rules: string[];
+  };
+  approvals: Array<{
+    toolCallId: string;
+    toolName: string;
+    decision: string;
+    rawInput?: unknown;
+    createdAt: string;
+  }>;
+  writes: Array<{
+    toolCallId: string;
+    toolName: string;
+    path: string;
+    inOutputDir: boolean;
+    inCwd: boolean;
+    inReadOnlyInput: boolean;
+  }>;
+  commands: Array<{
+    toolCallId: string;
+    command: unknown;
+  }>;
+  egoChangedFiles: string[];
+  unreportedWrites: string[];
+  writesOutsideOutput: string[];
+  currentWritesOutsideOutput: string[];
+  writesToReadOnlyInputs: string[];
+  currentWritesToReadOnlyInputs: string[];
+  boundaryDiff?: BoundaryDiff;
+  findings: AuditFinding[];
 }
 
 export interface EgoResult {

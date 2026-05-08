@@ -1,4 +1,4 @@
-import type { CritiqueResult, EgoResult, HaDecision } from "../types.js";
+import type { AuditPacket, CritiqueResult, EgoResult, HaDecision } from "../types.js";
 
 const SHARED_AGENT_PRINCIPLES = [
   "共通原则：",
@@ -32,6 +32,7 @@ export function buildHaDecisionPrompt(task: string): string {
     "当 next_action=answer 或 clarify 时，response 是直接给用户的中文回复；acceptance_contract 为空字符串。",
     "当 next_action=execute 时，response 为空字符串；acceptance_contract 必须包含明确的完成目标、边界、证据和验证要求。",
     "生成 acceptance_contract 时必须保留用户当前请求的真实对象和上下文。例如用户要求安装 Pi/browser 技能，就写安装该技能并验证技能可发现；不要改写成安装当前项目依赖。",
+    "生成 acceptance_contract 时必须体现边界审计原则：声明用户给出的只读输入边界、允许输出边界和工作目录边界；系统默认只做边界目录轻量元数据 diff，不做全量内容 diff；只有发现边界异常、命令副作用、返工失败或高风险验收点时才触发 hash 或内容级深查。",
     "",
     `用户任务：${task}`,
   ].join("\n");
@@ -60,6 +61,7 @@ export function buildAcceptanceContract(task: string): string {
     "3. 如涉及代码或文件修改，必须尽量运行相关检查；无法运行时说明原因。",
     "4. 不做无关重构，不扩大任务边界。",
     "5. 如遇权限、环境、依赖、模型认证或外部系统阻塞，必须明确说明阻塞点和已验证事实。",
+    "6. 涉及文件边界时，系统默认进行边界目录轻量元数据 diff：只读输入边界不得新增、修改或删除；输出应写入允许输出目录；默认不做全量内容 diff，风险升高时才触发 hash 或内容级深查。",
     "",
     `用户任务：${task}`,
   ].join("\n");
@@ -116,12 +118,24 @@ export function buildEgoRepairPrompt(rawOutput: string, errorMessage: string): s
   ].join("\n");
 }
 
-export function buildSuperegoPrompt(task: string, contract: string, egoOutput: string): string {
+export function buildSuperegoPrompt(task: string, contract: string, egoOutput: string, auditPacket: AuditPacket): string {
   return [
     "你是 MAS 的 Superego 评审者。请只评审，不要修改文件、不要执行命令。",
     SHARED_AGENT_PRINCIPLES,
-    "根据用户任务、验收合同和 Ego 输出判断是否可以交给 HA 终验。",
+    "根据用户任务、验收合同、Ego 输出和 MAS 审计包判断是否可以交给 HA 终验。",
     "重点评审：是否完成用户真实意图，是否越权，是否缺少验证，是否有不必要改动，是否把内部细节当用户价值。",
+    "MAS 审计包是系统级证据，优先级高于 Ego 自报；如果两者冲突，以审计包为准。",
+    "如果 auditPacket.findings 非空，必须逐项评估。默认验收策略是当前状态门禁 + 历史事实留痕：当前仍存在的 output 目录外写入、只读输入路径写入、失败验证伪装为成功时不能 accept，必须 revise 或 escalate；历史已清理的越界写入和 changed_files 漏报必须记录，但不单独作为永久阻塞。",
+    "如果 auditPacket.currentWritesOutsideOutput 非空，必须指出当前违反输出边界；如果只有 auditPacket.writesOutsideOutput 非空，则作为历史留痕评估修复是否充分。",
+    "如果 auditPacket.currentWritesToReadOnlyInputs 非空，必须指出当前违反只读输入边界。",
+    "如果 auditPacket.unreportedWrites 非空，必须指出 Ego changed_files 自报不完整。",
+    "snapshot/diff 只能作为边界目录轻量元数据 diff + 风险触发深查来使用：不要要求全量重审计或全量 hash；优先检查用户声明的只读输入边界、output 输出边界、已知写入路径和审计矛盾点。",
+    "你需要自主决定是否做抽样复核，以及抽样策略和实施内容。抽样目标是用分层风险抽样 + 少量随机扰动，以低成本、高信息增益的只读检查发现关键错误，不是全量重做 Ego 工作。",
+    "抽样复核应包含三类样本：必查样本覆盖用户明确强调的关键指标和验收硬约束；风险样本覆盖 Ego 风险项、审计发现、边界条件、空值/0值/异常值；少量随机样本从剩余普通样本空间中选择，用于抵抗确认偏差。",
+    "数据表任务通常需要抽样复算公式、检查空值/0值/异常值、检查输出结构和模板字段一致性；代码任务通常需要抽查改动文件、验证命令、用户可见行为和回归风险。",
+    "必须说明抽样策略、样本空间、样本数、随机扰动依据；如果没有可复现 seed，也要说明随机性不可复现的限制。",
+    "你可以执行只读检查；禁止写文件、编辑文件或运行有外部副作用的命令。如果因为权限、信息不足或成本过高没有抽样，必须在 critique_items 中说明原因，并相应降低 quality_score。",
+    "如果抽样复核发现失败、审计矛盾、关键要求未验证或抽样证据不足以支持交付，不能 accept。",
     "必须调用 superego_review 工具提交结构化评审结果，并把它作为最终动作。",
     "不要用普通文本、Markdown 代码块或手写 JSON 作为最终结果。",
     "superego_review 参数格式：",
@@ -137,6 +151,9 @@ export function buildSuperegoPrompt(task: string, contract: string, egoOutput: s
     "",
     "Ego 输出：",
     egoOutput.slice(-12000),
+    "",
+    "MAS 审计包：",
+    JSON.stringify(auditPacket, null, 2).slice(-12000),
   ].join("\n");
 }
 

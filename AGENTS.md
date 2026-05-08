@@ -51,6 +51,8 @@ MAS 是一个多智能体执行系统 MVP，目标是通过 ACP 协议接入 Aio
 - `src/storage.ts`：SQLite 持久化。
 - `src/types.ts`：MAS 内部共享类型。
 - `docs/ROADMAP.md`：未来规划和路线图。
+- `docs/AUTONOMY.md`：MAS 自主性、Experience Graph、反思和 Dream 模式设计。
+- `docs/AUTONOMY_TODO.md`：MAS 自主性机制的具体待办事项。
 
 ## 启动和验证命令
 
@@ -133,9 +135,18 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - Pi 适配层只负责创建 Pi session、映射事件、拦截工具权限，不承担 HA / Ego / Superego 决策。
 - 编排逻辑放在 `src/core/`，保持状态机显式、可测试。
 - HA / Ego / Superego 的内部结构化输出应优先使用 Pi SDK typed tool，MAS 侧必须保留业务 schema 校验和 repair prompt 兜底。
+- HA 是人类助理层，只负责面向用户接收任务、澄清和汇报；后台自主性机制不应由 HA 驱动。
+- Ego / Superego / Id-Dream 负责 MAS 内部自主性：Ego 记录任务过程和结果，Superego 生成与裁剪反思意图，Dream 在低权限、低规约模式下重组 Experience Graph。
+- Experience Graph 是 MAS 长期自主性的核心记忆结构，应串联任务、执行过程、结果、经验、反思和 Dream 裁剪；反思可以递归，但必须受能量预算、拓扑约束和审计约束控制。
+- Superego 评审必须基于 Ego 自报和 MAS 系统审计证据共同判断；`AuditPacket` 中的工具调用、审批、写入路径和 `changed_files` 对账结果优先级高于 Ego 自报。
+- Superego 默认验收策略是当前状态门禁 + 历史事实留痕：当前仍存在的 `output` 目录外写入、只读输入路径写入或失败验证伪装为成功时必须阻塞；历史已清理的越界写入和 `changed_files` 漏报必须留痕，但不单独作为永久阻塞。
+- Superego 抽样复核应采用分层风险抽样 + 少量随机扰动；snapshot/diff 只能做边界目录轻量元数据 diff + 风险触发深查，不能默认全量重审计。
+- HA 生成验收合同时必须声明只读输入、允许输出和工作目录边界；baseline snapshot 由 MAS 框架层在 Ego 执行前生成，不能依赖 Ego 自报。
+- Dream 模式允许操作 Experience Graph，但不允许执行外部工具、写用户工作区、创建新嵌套反思或直接向用户发送任务结果。
 - 权限策略必须默认保守：读自动，写和命令需审批。
 - 对用户工作区的写入和命令执行必须能审计，至少记录 runId、toolCallId、toolName、decision 和 rawInput。
 - 新增长期规划、架构演进、阶段目标时写入 `docs/ROADMAP.md`，不要塞进 `AGENTS.md`。
+- MAS 自主性的具体实现待办统一维护在 `docs/AUTONOMY_TODO.md`，不要把详细任务清单写入 `AGENTS.md`。
 
 ## 多人协作与 Git 约束
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { JsonRpcPeer } from "./json-rpc.js";
 import { AcpStreamSink } from "./acp-sink.js";
 import { normalizeOrchestrationMode, orchestrationModeList } from "../core/orchestration.js";
+import { ReflectionScheduler } from "../core/reflection-scheduler.js";
 import { MasRunner } from "../core/runner.js";
 import { discoverSkills } from "../core/skills.js";
 import { MasStore } from "../storage.js";
@@ -22,13 +23,27 @@ export interface AcpServerOptions {
   approvalModePolicy: ApprovalModePolicy;
   maxIterations: number;
   orchestrationMode: OrchestrationMode;
+  reflectionScheduler: boolean;
+  reflectionIntervalMs: number;
+  reflectionDueLimit: number;
+  reflectionDreamLimit: number;
+  reflectionSchedulerDream: boolean;
 }
 
 export function startAcpServer(options: AcpServerOptions): void {
   const peer = new JsonRpcPeer(process.stdin, process.stdout);
   const store = new MasStore();
   const runner = new MasRunner();
+  const scheduler = options.reflectionScheduler
+    ? new ReflectionScheduler(store, {
+        intervalMs: options.reflectionIntervalMs,
+        dueLimit: options.reflectionDueLimit,
+        dreamLimit: options.reflectionDreamLimit,
+        runDream: options.reflectionSchedulerDream,
+      })
+    : undefined;
   const sessions = new Map<string, SessionState>();
+  scheduler?.start();
 
   peer.on("initialize", () => ({
     protocolVersion: 1,

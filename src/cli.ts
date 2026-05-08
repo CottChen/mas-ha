@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { startAcpServer } from "./acp/server.js";
+import { AutonomyLoop } from "./core/autonomy.js";
 import { normalizeOrchestrationMode, orchestrationModeList } from "./core/orchestration.js";
 import { MasRunner } from "./core/runner.js";
 import { loadPiSdk } from "./pi/pi-sdk.js";
 import { MasStore } from "./storage.js";
-import type { ApprovalModePolicy, PermissionDecision, PermissionRequestInput, StreamSink, ToolEventInput } from "./types.js";
+import type { ApprovalModePolicy, PermissionDecision, PermissionRequestInput, ReflectionStatus, StreamSink, ToolEventInput } from "./types.js";
 
 async function main(): Promise<void> {
   const [rawCommand, ...rawArgs] = process.argv.slice(2);
@@ -17,10 +18,25 @@ async function main(): Promise<void> {
   const maxIterations = Number(flags.get("max-iterations") ?? 3);
   const orchestrationMode = normalizeOrchestrationMode(flags.get("orchestration-mode") ?? flags.get("mode"));
   const approvalModePolicy = normalizeApprovalModePolicy(flags.get("approval-mode-policy") ?? flags.get("permission-policy"));
+  const reflectionScheduler = flags.has("reflection-scheduler");
+  const reflectionIntervalMs = Number(flags.get("reflection-interval") ?? 60_000);
+  const reflectionDueLimit = Number(flags.get("reflection-due-limit") ?? 10);
+  const reflectionDreamLimit = Number(flags.get("reflection-dream-limit") ?? 10);
+  const reflectionSchedulerDream = !flags.has("no-reflection-dream");
 
   switch (command) {
     case "acp":
-      startAcpServer({ approvalMode, approvalModePolicy, maxIterations, orchestrationMode });
+      startAcpServer({
+        approvalMode,
+        approvalModePolicy,
+        maxIterations,
+        orchestrationMode,
+        reflectionScheduler,
+        reflectionIntervalMs,
+        reflectionDueLimit,
+        reflectionDreamLimit,
+        reflectionSchedulerDream,
+      });
       return;
     case "run": {
       const prompt = positional(args).join(" ").trim();
@@ -44,6 +60,10 @@ async function main(): Promise<void> {
     case "status": {
       const store = new MasStore();
       console.log(JSON.stringify(store.listRuns(Number(flags.get("limit") ?? 20)), null, 2));
+      return;
+    }
+    case "reflect": {
+      await reflect(args, flags);
       return;
     }
     case undefined:
@@ -146,15 +166,37 @@ function printHelp(): void {
   console.log(`MAS MVP
 
 用法：
-  mas acp [--approve-all] [--approval-mode-policy fixed|mutable] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
-  mas --experimental-acp [--approve-all] [--approval-mode-policy fixed|mutable] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
+  mas acp [--approve-all] [--approval-mode-policy fixed|mutable] [--reflection-scheduler] [--reflection-interval 60000] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
+  mas --experimental-acp [--approve-all] [--approval-mode-policy fixed|mutable] [--reflection-scheduler] [--reflection-interval 60000] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
   mas run <task> [--cwd <dir>] [--approve-all] [--deny-writes] [--orchestration-mode ha-ego-superego]
   mas status [--limit 20]
+  mas reflect due|list|dream [--limit 20]
   mas doctor
 
 编排模式：
 ${modes}
 `);
+}
+
+async function reflect(args: string[], flags: Map<string, string | boolean>): Promise<void> {
+  const [subcommand = "due"] = positional(args);
+  const limit = Number(flags.get("limit") ?? 20);
+  const store = new MasStore();
+  const loop = new AutonomyLoop(store);
+  if (subcommand === "due") {
+    console.log(JSON.stringify(loop.runDueReflections(limit), null, 2));
+    return;
+  }
+  if (subcommand === "list") {
+    const status = normalizeReflectionStatus(flags.get("status"));
+    console.log(JSON.stringify(store.listReflectionTasks(status, limit), null, 2));
+    return;
+  }
+  if (subcommand === "dream") {
+    console.log(JSON.stringify(loop.dreamPrune(limit), null, 2));
+    return;
+  }
+  throw new Error(`未知 reflect 子命令：${subcommand}`);
 }
 
 function normalizeCommand(command: string | undefined, args: string[]): [string | undefined, string[]] {
@@ -164,6 +206,11 @@ function normalizeCommand(command: string | undefined, args: string[]): [string 
 
 function normalizeApprovalModePolicy(value: string | boolean | undefined): ApprovalModePolicy {
   return value === "mutable" ? "mutable" : "fixed";
+}
+
+function normalizeReflectionStatus(value: string | boolean | undefined): ReflectionStatus | undefined {
+  if (value === "scheduled" || value === "running" || value === "completed" || value === "cancelled" || value === "pruned") return value;
+  return undefined;
 }
 
 main().catch((error) => {

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { MasStore } from "../storage.js";
-import type { ApprovalMode, ConversationTurn, CritiqueResult, EgoResult, HaDecision, MasRunOptions, StreamSink } from "../types.js";
+import type { ApprovalMode, BoundarySnapshot, ConversationTurn, CritiqueResult, EgoResult, HaDecision, MasRunOptions, StreamSink } from "../types.js";
 import { createPiSession } from "../pi/pi-sdk.js";
+import { buildAuditPacket, createBoundarySnapshot, enforceAuditGate } from "./audit.js";
+import { AutonomyLoop } from "./autonomy.js";
 import { ORCHESTRATION_MODES } from "./orchestration.js";
 import {
   buildAcceptanceContract,
@@ -17,7 +19,10 @@ import {
 } from "./prompts.js";
 
 export class MasRunner {
-  constructor(private readonly store = new MasStore()) {}
+  constructor(
+    private readonly store = new MasStore(),
+    private readonly autonomy = new AutonomyLoop(store),
+  ) {}
 
   async run(prompt: string, options: MasRunOptions, sink: StreamSink, sessionId?: string): Promise<{ runId: string; result: string }> {
     const runId = randomUUID();
@@ -73,6 +78,8 @@ export class MasRunner {
 
       const contract = haDecision.acceptance_contract.trim() || buildAcceptanceContract(task);
       sink.thought(`HA 已创建验收合同。编排模式：${mode.name}。\n${contract}\n`);
+      const boundarySnapshot: BoundarySnapshot = createBoundarySnapshot({ cwd: options.cwd, task, contract });
+      this.store.audit({ runId, actor: "system", action: "boundary_snapshot_baseline", payload: summarizeBoundarySnapshot(boundarySnapshot) });
 
       for (let iteration = 1; iteration <= options.maxIterations; iteration++) {
         throwIfAborted(options.signal);
@@ -120,6 +127,7 @@ export class MasRunner {
         if (egoResult.status === "blocked" || egoResult.status === "needs_attention") {
           const result = `HA 终验未通过：Ego 未能完成执行。\n\n${egoResult.final_response}`;
           this.store.updateRun(runId, "needs_attention", { result, egoResult, orchestrationMode: mode.id });
+          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "needs_attention", result, egoResult, reason: egoResult.status });
           sink.done(result);
           return { runId, result };
         }
@@ -127,6 +135,7 @@ export class MasRunner {
         if (!mode.usesSuperego) {
           const result = `HA 终验通过（${mode.name} 模式，未启用 Superego 评审）。\n\n${finalEgoOutput}`;
           this.store.updateRun(runId, "completed", { result, egoResult, orchestrationMode: mode.id });
+          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "completed", result, egoResult, reason: "superego_disabled" });
           this.store.addEvent({
             runId,
             sessionId,
@@ -156,14 +165,17 @@ export class MasRunner {
         options.signal?.addEventListener("abort", abortSuperego, { once: true });
         let reviewText = "";
         try {
-          reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2)));
+          const auditPacket = buildAuditPacket(this.store, { runId, cwd: options.cwd, egoResult, boundarySnapshot, task, contract });
+          this.store.audit({ runId, actor: "superego", action: "audit_packet_built", payload: auditPacket });
+          reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2), auditPacket));
           critique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration);
+          critique = enforceAuditGate(critique, auditPacket);
           this.store.addAgentRun({
             runId,
             role: "superego",
             iteration,
             status: "completed",
-            input: { prompt, task, contract },
+            input: { prompt, task, contract, auditPacket },
             output: { text: reviewText, critique },
           });
           this.store.addEvent({
@@ -185,12 +197,14 @@ export class MasRunner {
         if (critique.next_action === "escalate") {
           const result = `HA 终验未通过：Superego 要求人工介入。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
           this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
+          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "needs_attention", result, egoResult, critique, reason: "superego_escalate" });
           sink.done(result);
           return { runId, result };
         }
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
           const result = `HA 终验通过。\n\n${finalEgoOutput}`;
           this.store.updateRun(runId, "completed", { result, critique, egoResult });
+          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "completed", result, egoResult, critique, reason: "superego_accept" });
           this.store.addEvent({
             runId,
             sessionId,
@@ -206,6 +220,7 @@ export class MasRunner {
 
       const result = `HA 终验未通过：达到最大返工轮次。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
       this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
+      this.recordAutonomyClosure({ runId, sessionId, prompt, status: "needs_attention", result, egoResult, critique, reason: "max_iterations" });
       this.store.addEvent({
         runId,
         sessionId,
@@ -219,6 +234,18 @@ export class MasRunner {
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.store.updateRun(runId, "failed", { message: err.message, stack: err.stack });
+      if (egoResult || critique) {
+        this.recordAutonomyClosure({
+          runId,
+          sessionId,
+          prompt,
+          status: "failed",
+          result: err.message,
+          egoResult,
+          critique,
+          reason: "run_failed",
+        });
+      }
       this.store.addEvent({
         runId,
         sessionId,
@@ -229,6 +256,28 @@ export class MasRunner {
       });
       sink.error(err);
       throw err;
+    }
+  }
+
+  private recordAutonomyClosure(input: {
+    runId: string;
+    sessionId?: string;
+    prompt: string;
+    status: "completed" | "needs_attention" | "failed";
+    result: string;
+    egoResult?: EgoResult;
+    critique?: CritiqueResult;
+    reason?: string;
+  }): void {
+    try {
+      this.autonomy.recordTaskClosure(input);
+    } catch (error) {
+      this.store.audit({
+        runId: input.runId,
+        actor: "superego",
+        action: "autonomy_closure_failed",
+        payload: { message: error instanceof Error ? error.message : String(error) },
+      });
     }
   }
 
@@ -500,6 +549,22 @@ function trimHistory(history: ConversationTurn[]): ConversationTurn[] {
     total = Math.min(nextTotal, maxChars);
   }
   return selected.reverse();
+}
+
+function summarizeBoundarySnapshot(snapshot: BoundarySnapshot): unknown {
+  return {
+    createdAt: snapshot.createdAt,
+    cwd: snapshot.cwd,
+    scopes: snapshot.scopes.map((scope) => ({
+      kind: scope.kind,
+      path: scope.path,
+      exists: scope.exists,
+      depth: scope.depth,
+      fileCount: scope.fileCount,
+      dirCount: scope.dirCount,
+      truncated: scope.truncated,
+    })),
+  };
 }
 
 class InternalSink implements StreamSink {
