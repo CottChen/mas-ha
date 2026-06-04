@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AionUI、MAS、Pi 与大模型会话链路讲解</title>
+  <style>
+    :root {
+      --bg: #eef1f5;
+      --slide: #ffffff;
+      --text: #101828;
+      --muted: #526070;
+      --line: #d8dee8;
+      --blue: #2457d6;
+      --cyan: #067a8f;
+      --green: #16825d;
+      --amber: #a76200;
+      --red: #b42318;
+      --soft-blue: #eef4ff;
+      --soft-cyan: #e9f8fb;
+      --soft-green: #ecfdf3;
+      --soft-amber: #fff7e6;
+      --shadow: 0 18px 42px rgba(16, 24, 40, 0.14);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    }
+
+    body {
+      overflow: auto;
+    }
+
+    .deck {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 26px;
+    }
+
+    .slide {
+      display: none;
+      width: min(1180px, 100%);
+      height: min(760px, calc(100vh - 72px));
+      min-height: 560px;
+      overflow: auto;
+      padding: 34px 46px 54px;
+      background: var(--slide);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      position: relative;
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .eyebrow {
+      color: var(--blue);
+      font-size: 15px;
+      line-height: 1.3;
+      font-weight: 800;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      max-width: 900px;
+      font-size: 50px;
+      line-height: 1.08;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 34px;
+      line-height: 1.16;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      font-size: 21px;
+      line-height: 1.26;
+      letter-spacing: 0;
+    }
+
+    p,
+    li {
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .lead {
+      max-width: 850px;
+      color: #344054;
+      font-size: 22px;
+      line-height: 1.5;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: 28px;
+      align-items: center;
+      flex: 1;
+    }
+
+    .diagram {
+      display: grid;
+      gap: 12px;
+    }
+
+    .diagram-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .step {
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--blue);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 104px;
+      background: #fbfcfe;
+      position: relative;
+    }
+
+    .step::after {
+      content: "→";
+      position: absolute;
+      right: -18px;
+      top: 36px;
+      color: #98a2b3;
+      font-size: 26px;
+      font-weight: 800;
+    }
+
+    .step:last-child::after {
+      content: "";
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    .step span {
+      display: block;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.42;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .cards.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: #fbfcfe;
+    }
+
+    .card.blue {
+      background: var(--soft-blue);
+      border-color: #c7d7fe;
+    }
+
+    .card.cyan {
+      background: var(--soft-cyan);
+      border-color: #a6e4ef;
+    }
+
+    .card.green {
+      background: var(--soft-green);
+      border-color: #abefc6;
+    }
+
+    .card.amber {
+      background: var(--soft-amber);
+      border-color: #fedf89;
+    }
+
+    .card h3 {
+      margin-bottom: 8px;
+    }
+
+    .number-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px 18px;
+      counter-reset: item;
+    }
+
+    .number-item {
+      counter-increment: item;
+      display: grid;
+      grid-template-columns: 40px 1fr;
+      gap: 12px;
+      align-items: start;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 13px;
+    }
+
+    .number-item::before {
+      content: counter(item);
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: #e8efff;
+      color: var(--blue);
+      font-weight: 800;
+    }
+
+    .number-item strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 17px;
+    }
+
+    .number-item span {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 15px;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      line-height: 1.45;
+    }
+
+    th {
+      background: #eaf1ff;
+      color: #163b8f;
+      font-weight: 800;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code {
+      display: inline-block;
+      max-width: 100%;
+      padding: 2px 6px;
+      border: 1px solid #d0d5dd;
+      border-radius: 6px;
+      background: #f2f4f7;
+      color: #344054;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 0.92em;
+      overflow-wrap: anywhere;
+    }
+
+    .callout {
+      border-left: 5px solid var(--blue);
+      border-radius: 8px;
+      background: #f5f8ff;
+      padding: 16px 20px;
+      color: #153e90;
+      font-size: 20px;
+      line-height: 1.45;
+      font-weight: 760;
+    }
+
+    .codebox {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #111827;
+      color: #f9fafb;
+      padding: 16px;
+      overflow: auto;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 14px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .footer {
+      position: absolute;
+      left: 46px;
+      right: 46px;
+      bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      color: #8090a5;
+      font-size: 14px;
+    }
+
+    .progress {
+      position: fixed;
+      left: 28px;
+      right: 28px;
+      bottom: 18px;
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #c8d0dd;
+    }
+
+    .dot.active {
+      width: 28px;
+      border-radius: 999px;
+      background: var(--blue);
+    }
+
+    .nav-hint {
+      position: fixed;
+      right: 32px;
+      bottom: 15px;
+      color: #667085;
+      font-size: 14px;
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .badge {
+      border: 1px solid #c7d7fe;
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #163b8f;
+      padding: 7px 11px;
+      font-size: 14px;
+      font-weight: 760;
+    }
+
+    @media (max-width: 900px) {
+      .deck {
+        padding: 12px;
+      }
+
+      .slide {
+        width: 100%;
+        height: auto;
+        min-height: calc(100vh - 24px);
+        padding: 26px 18px 50px;
+      }
+
+      h1 {
+        font-size: 34px;
+      }
+
+      h2 {
+        font-size: 27px;
+      }
+
+      .lead {
+        font-size: 18px;
+      }
+
+      .hero-grid,
+      .cards,
+      .cards.three,
+      .number-list,
+      .diagram-row {
+        grid-template-columns: 1fr;
+      }
+
+      .step::after {
+        content: "↓";
+        right: 18px;
+        top: auto;
+        bottom: -25px;
+      }
+
+      .progress,
+      .nav-hint {
+        display: none;
+      }
+
+      table,
+      thead,
+      tbody,
+      tr,
+      th,
+      td {
+        display: block;
+      }
+
+      table {
+        border: 0;
+        overflow: visible;
+      }
+
+      thead {
+        display: none;
+      }
+
+      tbody {
+        display: grid;
+        gap: 12px;
+      }
+
+      tr {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfe;
+        overflow: hidden;
+      }
+
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 12px 14px;
+      }
+
+      td:last-child {
+        border-bottom: 0;
+      }
+
+      td::before {
+        display: block;
+        margin-bottom: 5px;
+        color: #163b8f;
+        font-weight: 800;
+      }
+
+      .identity-table td:nth-child(1)::before {
+        content: "身份";
+      }
+
+      .identity-table td:nth-child(2)::before {
+        content: "含义";
+      }
+
+      .identity-table td:nth-child(3)::before {
+        content: "生命周期";
+      }
+
+      .storage-table td:nth-child(1)::before {
+        content: "表";
+      }
+
+      .storage-table td:nth-child(2)::before {
+        content: "作用";
+      }
+
+      .storage-table td:nth-child(3)::before {
+        content: "会话关系";
+      }
+
+      .tradeoff-table td:nth-child(1)::before {
+        content: "问题";
+      }
+
+      .tradeoff-table td:nth-child(2)::before {
+        content: "当前选择";
+      }
+
+      .tradeoff-table td:nth-child(3)::before {
+        content: "原因";
+      }
+
+      .footer {
+        left: 18px;
+        right: 18px;
+      }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+
+      .deck {
+        display: block;
+        padding: 0;
+      }
+
+      .slide,
+      .slide.active {
+        display: flex;
+        width: 100%;
+        min-height: 100vh;
+        height: auto;
+        box-shadow: none;
+        border: 0;
+        page-break-after: always;
+      }
+
+      .progress,
+      .nav-hint {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck">
+    <section class="slide active" data-title="标题">
+      <div class="hero-grid">
+        <div>
+          <div class="eyebrow">技术讲解</div>
+          <h1>AionUI、MAS、Pi 与大模型的会话链路</h1>
+          <p class="lead">解释一次对话如何流转，MAS 如何用 SQLite 维护上下文，以及为什么当前没有直接复用 Pi 的持久会话 ID。</p>
+          <div class="badge-row" style="margin-top: 24px;">
+            <span class="badge">AionUI 会话</span>
+            <span class="badge">MAS SQLite</span>
+            <span class="badge">Pi 执行实例</span>
+            <span class="badge">大模型上下文</span>
+          </div>
+        </div>
+        <div class="diagram">
+          <div class="diagram-row">
+            <div class="step"><strong>AionUI</strong><span>用户界面和审批入口</span></div>
+            <div class="step"><strong>ACP</strong><span>JSON-RPC over stdio</span></div>
+            <div class="step"><strong>MAS</strong><span>会话、编排、审计</span></div>
+            <div class="step"><strong>Pi SDK</strong><span>agent 执行内核</span></div>
+            <div class="step"><strong>大模型</strong><span>推理和生成</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="footer"><span>主题：会话对齐与上下文恢复</span><span>1 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="核心结论">
+      <div class="eyebrow">先给结论</div>
+      <h2>“同一个会话”的责任方是 MAS</h2>
+      <div class="cards three">
+        <div class="card blue">
+          <h3>AionUI 看见会话</h3>
+          <p>AionUI 负责展示对话、接收用户输入、带回 <code>sessionId</code>，并展示权限审批。</p>
+        </div>
+        <div class="card green">
+          <h3>MAS 定义会话</h3>
+          <p>MAS 用 <code>sessionId</code> 归档消息、摘要、事件、审批和任务执行记录。</p>
+        </div>
+        <div class="card amber">
+          <h3>Pi 执行任务</h3>
+          <p>Pi session 当前是角色级执行实例，不是 AionUI 会话的长期主记录。</p>
+        </div>
+      </div>
+      <div class="callout">当前会话连续性来自 MAS 的 SQLite 上下文恢复，而不是 Pi 的持久会话恢复。</div>
+      <div class="footer"><span>关键区分：UI 会话、MAS run、Pi session</span><span>2 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="三种身份">
+      <div class="eyebrow">身份模型</div>
+      <h2><code>sessionId</code>、<code>runId</code>、Pi session 不是一回事</h2>
+      <table class="identity-table">
+        <thead>
+          <tr><th>身份</th><th>含义</th><th>生命周期</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>sessionId</code></td>
+            <td>AionUI / MAS 共同识别的用户对话身份。</td>
+            <td>跨多次用户请求存在，用于恢复上下文和回放事件。</td>
+          </tr>
+          <tr>
+            <td><code>runId</code></td>
+            <td>同一会话中一次用户请求对应的一次 MAS 执行。</td>
+            <td>每次 <code>session/prompt</code> 通常创建一个新的 run。</td>
+          </tr>
+          <tr>
+            <td>Pi session</td>
+            <td>HA、Ego 或 Superego 某一轮调用 Pi SDK 创建的 agent 实例。</td>
+            <td>当前主要是内存型执行实例，用完释放或结束。</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout">一个 <code>sessionId</code> 可以包含多个 <code>runId</code>；一个 <code>runId</code> 内可能创建 HA、Ego、Superego 多个 Pi session。</div>
+      <div class="footer"><span>身份边界清楚，才能解释为什么要由 MAS 做对齐</span><span>3 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="一次请求">
+      <div class="eyebrow">请求阶段</div>
+      <h2>一次用户输入经历这些步骤</h2>
+      <div class="number-list">
+        <div class="number-item"><div><strong>创建或加载会话</strong><span>AionUI 调用 <code>session/new</code> 或 <code>session/load</code>。</span></div></div>
+        <div class="number-item"><div><strong>MAS 记录活动会话</strong><span>MAS 把 <code>sessionId</code> 写入进程内 <code>sessions</code> map。</span></div></div>
+        <div class="number-item"><div><strong>AionUI 带回身份</strong><span>用户输入后，AionUI 用同一个 <code>sessionId</code> 调用 <code>session/prompt</code>。</span></div></div>
+        <div class="number-item"><div><strong>MAS 查活动状态</strong><span>MAS 用 <code>sessions.get(sessionId)</code> 找 cwd、模式和技能。</span></div></div>
+        <div class="number-item"><div><strong>MAS 恢复上下文</strong><span>MAS 从 SQLite 取摘要和最近消息。</span></div></div>
+        <div class="number-item"><div><strong>构造本轮任务</strong><span>MAS 把历史、技能摘要和当前请求拼成 prompt。</span></div></div>
+        <div class="number-item"><div><strong>Pi 执行角色任务</strong><span>HA、Ego、Superego 需要时分别创建 Pi session。</span></div></div>
+        <div class="number-item"><div><strong>结果回写会话</strong><span>MAS 保存助手回复和事件，再通过 ACP 更新 AionUI。</span></div></div>
+      </div>
+      <div class="footer"><span>每次请求都重新经过 MAS 的上下文构造</span><span>4 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="代码入口">
+      <div class="eyebrow">代码入口</div>
+      <h2>AionUI 带回 <code>sessionId</code> 后，MAS 在这里处理</h2>
+      <div class="codebox">peer.on("session/prompt", async (params) =&gt; {
+  const sessionId = String(params?.sessionId ?? "");
+  const session = sessions.get(sessionId);
+  if (!session) throw new Error(`未知 sessionId：${sessionId}`);
+
+  session.context = store.getConversationContext(sessionId);
+  store.addMessage({ sessionId, role: "user", content: prompt, metadata: { source: "acp" } });
+
+  const result = await runner.run(..., sessionId);
+});</div>
+      <div class="cards three">
+        <div class="card blue"><h3>取回身份</h3><p><code>params.sessionId</code> 来自 AionUI 的 ACP 请求。</p></div>
+        <div class="card cyan"><h3>查活动状态</h3><p><code>sessions.get</code> 找当前进程内的会话状态。</p></div>
+        <div class="card green"><h3>恢复上下文</h3><p><code>getConversationContext</code> 从 SQLite 取摘要和最近消息。</p></div>
+      </div>
+      <div class="footer"><span>对应文件：src/acp/server.ts</span><span>5 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="SQLite">
+      <div class="eyebrow">持久化</div>
+      <h2>MAS 用 SQLite 保存会话记忆和审计证据</h2>
+      <table class="storage-table">
+        <thead>
+          <tr><th>表</th><th>作用</th><th>会话关系</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>messages</code></td><td>保存用户和助手消息。</td><td>通过 <code>session_id</code> 归属到同一 AionUI 会话。</td></tr>
+          <tr><td><code>session_context</code></td><td>保存压缩摘要和已摘要消息位置。</td><td>用 <code>session_id</code> 恢复早期上下文。</td></tr>
+          <tr><td><code>runs</code></td><td>保存每次任务执行状态。</td><td>一个会话下可以有多条 run。</td></tr>
+          <tr><td><code>events</code></td><td>保存 MAS / Pi 事件流。</td><td>同时带 <code>run_id</code> 和 <code>session_id</code>。</td></tr>
+          <tr><td><code>approvals</code></td><td>保存工具审批结果。</td><td>通过 run 和事件链路回到会话。</td></tr>
+        </tbody>
+      </table>
+      <div class="callout">SQLite 是 MAS 的会话记忆来源，也是审计和回放的事实来源。</div>
+      <div class="footer"><span>对应文件：src/storage.ts</span><span>6 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="上下文注入">
+      <div class="eyebrow">上下文构造</div>
+      <h2>MAS 不是让 Pi 自己找历史，而是显式注入上下文</h2>
+      <div class="codebox">const task = buildTaskWithConversation(
+  prompt,
+  options.conversationHistory,
+  options.conversationSummary,
+  options.availableSkills,
+);
+
+// 任务中会包含：
+// - 同一 AionUI 会话的历史说明
+// - 已压缩的早期上下文摘要
+// - 最近历史对话
+// - 当前用户请求</div>
+      <div class="cards">
+        <div class="card green">
+          <h3>好处</h3>
+          <p>MAS 能明确控制哪些历史进入本轮任务，并能结合技能、审批和验收策略。</p>
+        </div>
+        <div class="card amber">
+          <h3>代价</h3>
+          <p>上下文需要 MAS 每轮重新拼接，长会话时需要摘要和裁剪策略。</p>
+        </div>
+      </div>
+      <div class="footer"><span>对应文件：src/core/runner.ts</span><span>7 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="Pi session">
+      <div class="eyebrow">Pi 执行实例</div>
+      <h2>当前 Pi session 是内存型角色执行实例</h2>
+      <div class="codebox">const { session } = await pi.createAgentSession({
+  cwd: options.cwd,
+  tools: roleTools,
+  customTools,
+  sessionManager: pi.SessionManager.inMemory(options.cwd),
+  resourceLoader,
+});</div>
+      <div class="cards three">
+        <div class="card blue"><h3>HA</h3><p>只做路由、澄清、直接回答判断，默认不开放写入能力。</p></div>
+        <div class="card green"><h3>Ego</h3><p>负责真实执行，可以读写文件、编辑文件和运行命令，但受审批约束。</p></div>
+        <div class="card amber"><h3>Superego</h3><p>负责评审和验收，当前以只读工具为主。</p></div>
+      </div>
+      <div class="callout">当前代码没有保存 Pi 持久 session id，也没有在下一轮用 Pi session id 恢复历史。</div>
+      <div class="footer"><span>对应文件：src/pi/pi-sdk.ts</span><span>8 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="为什么">
+      <div class="eyebrow">设计取舍</div>
+      <h2>为什么不直接复用 Pi 会话 ID？</h2>
+      <table class="tradeoff-table">
+        <thead>
+          <tr><th>问题</th><th>当前选择</th><th>原因</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>会话语义</td><td>以 MAS <code>sessionId</code> 为准</td><td>AionUI 会话可能包含多个角色和多次执行。</td></tr>
+          <tr><td>角色隔离</td><td>HA / Ego / Superego 分别创建执行实例</td><td>不同角色的工具、权限、prompt 和职责不同。</td></tr>
+          <tr><td>上下文治理</td><td>MAS 负责摘要、裁剪和注入</td><td>需要配合审批、审计、验收和返工。</td></tr>
+          <tr><td>审计追踪</td><td>事件统一归档到 MAS SQLite</td><td>便于按 <code>sessionId</code> 和 <code>runId</code> 回放。</td></tr>
+        </tbody>
+      </table>
+      <div class="footer"><span>这不是不能复用 Pi 会话，而是 MVP 阶段先把治理权放在 MAS</span><span>9 / 10</span></div>
+    </section>
+
+    <section class="slide" data-title="演进">
+      <div class="eyebrow">未来演进</div>
+      <h2>如果要复用 Pi 会话，需要新增显式映射层</h2>
+      <div class="diagram">
+        <div class="diagram-row">
+          <div class="step"><strong>MAS sessionId</strong><span>用户对话主身份</span></div>
+          <div class="step"><strong>HA Pi ID</strong><span>路由角色历史</span></div>
+          <div class="step"><strong>Ego Pi ID</strong><span>执行角色历史</span></div>
+          <div class="step"><strong>Superego Pi ID</strong><span>评审角色历史</span></div>
+          <div class="step"><strong>对账策略</strong><span>MAS 与 Pi 历史一致性</span></div>
+        </div>
+      </div>
+      <div class="cards">
+        <div class="card cyan">
+          <h3>需要补的设计</h3>
+          <p>Pi session id 持久化、角色隔离、摘要冲突、事件对账、SDK 升级兼容。</p>
+        </div>
+        <div class="card green">
+          <h3>当前推荐</h3>
+          <p>MVP 继续由 MAS 存上下文、恢复历史、注入任务，把 Pi 作为角色级执行内核。</p>
+        </div>
+      </div>
+      <div class="callout">一句话：AionUI 负责看见会话，MAS 负责维护会话，Pi 负责执行任务，大模型负责生成结果。</div>
+      <div class="footer"><span>汇报结束</span><span>10 / 10</span></div>
+    </section>
+  </main>
+
+  <div class="progress" aria-hidden="true"></div>
+  <div class="nav-hint">← / → 切换，Home / End 跳转，Ctrl+P 打印</div>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const progress = document.querySelector(".progress");
+    let current = 0;
+
+    slides.forEach((_, index) => {
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      progress.appendChild(dot);
+    });
+
+    const dots = Array.from(document.querySelectorAll(".dot"));
+
+    function slideIndexFromHash() {
+      const match = location.hash.match(/^#slide-(\d+)$/);
+      if (!match) return 0;
+      return Number(match[1]) - 1;
+    }
+
+    function showSlide(index, syncHash = true) {
+      current = Math.max(0, Math.min(slides.length - 1, index));
+      slides.forEach((slide, slideIndex) => {
+        slide.classList.toggle("active", slideIndex === current);
+      });
+      dots.forEach((dot, dotIndex) => {
+        dot.classList.toggle("active", dotIndex === current);
+      });
+      document.title = `${current + 1}/${slides.length} ${slides[current].dataset.title} - AionUI、MAS、Pi 与大模型会话链路讲解`;
+      if (syncHash) {
+        history.replaceState(null, "", `#slide-${current + 1}`);
+      }
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        showSlide(current + 1);
+      }
+      if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        showSlide(current - 1);
+      }
+      if (event.key === "Home") {
+        event.preventDefault();
+        showSlide(0);
+      }
+      if (event.key === "End") {
+        event.preventDefault();
+        showSlide(slides.length - 1);
+      }
+    });
+
+    window.addEventListener("hashchange", () => {
+      showSlide(slideIndexFromHash(), false);
+    });
+
+    showSlide(slideIndexFromHash());
+  </script>
+</body>
+</html>

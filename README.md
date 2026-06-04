@@ -52,7 +52,7 @@ cd C:\Users\Administrator\projects\mas-ha-orchestration
 C:\Users\Administrator\custom\mas-ha-orchestration-acp-gitbash.cmd autonomy daemon --interval 60000
 ```
 
-完整设计见 [MAS 自主性设计记录](docs/AUTONOMY.md)，具体待办见 [MAS 自主性待办](docs/AUTONOMY_TODO.md)。
+完整设计见 [MAS 自主性设计记录](docs/AUTONOMY.md)，Goal 控制面与低熵自主性方案见 [Goal 控制面与低熵自主性改造方案](docs/GOAL_ENTROPY_CONTROL.md)，具体待办见 [MAS 自主性待办](docs/AUTONOMY_TODO.md)。
 
 ## Superego 审计门禁
 

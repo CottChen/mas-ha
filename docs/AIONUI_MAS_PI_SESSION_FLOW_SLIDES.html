@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AionUI 到 MAS、Pi 与大模型的会话链路汇报</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #18212f;
+      --muted: #667085;
+      --line: #d8dde6;
+      --blue: #235ee8;
+      --green: #16825d;
+      --amber: #b56a00;
+      --red: #c53434;
+      --ink: #101828;
+      --shadow: 0 18px 45px rgba(16, 24, 40, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+      overflow: auto;
+    }
+
+    .deck {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+    }
+
+    .slide {
+      display: none;
+      width: min(1180px, 100%);
+      height: min(760px, calc(100vh - 72px));
+      min-height: 560px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 34px 46px 50px;
+      position: relative;
+      overflow: auto;
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+
+    .kicker {
+      color: var(--blue);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+
+    h1 {
+      max-width: 860px;
+      font-size: 52px;
+      line-height: 1.08;
+      font-weight: 760;
+    }
+
+    h2 {
+      font-size: 34px;
+      line-height: 1.18;
+      font-weight: 740;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.62;
+    }
+
+    .lead {
+      max-width: 860px;
+      color: #344054;
+      font-size: 22px;
+      line-height: 1.55;
+    }
+
+    .columns {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+      align-items: stretch;
+    }
+
+    .columns.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: #fbfcfe;
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      color: var(--ink);
+      font-size: 21px;
+      line-height: 1.25;
+    }
+
+    .card p,
+    li {
+      color: #475467;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 24px;
+    }
+
+    li + li {
+      margin-top: 10px;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .node {
+      min-height: 116px;
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--blue);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfe;
+      position: relative;
+    }
+
+    .node::after {
+      content: "→";
+      position: absolute;
+      right: -18px;
+      top: 42%;
+      color: #98a2b3;
+      font-size: 28px;
+      font-weight: 700;
+    }
+
+    .node:last-child::after {
+      content: "";
+    }
+
+    .node strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 19px;
+    }
+
+    .node span {
+      display: block;
+      color: #475467;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .stage-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px 24px;
+      counter-reset: stage;
+    }
+
+    .stage {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      counter-increment: stage;
+    }
+
+    .stage::before {
+      content: counter(stage);
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: #e8efff;
+      color: var(--blue);
+      font-weight: 800;
+    }
+
+    .stage strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-size: 17px;
+    }
+
+    .stage span {
+      color: #475467;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      font-size: 15px;
+    }
+
+    .matrix th,
+    .matrix td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .matrix th {
+      background: #eef3ff;
+      color: #163b8f;
+      font-weight: 760;
+    }
+
+    .matrix tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code {
+      border: 1px solid #d0d5dd;
+      border-radius: 6px;
+      padding: 2px 6px;
+      background: #f2f4f7;
+      color: #344054;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .identity-map {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .identity {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: #fbfcfe;
+    }
+
+    .identity.session {
+      border-top: 5px solid var(--blue);
+    }
+
+    .identity.run {
+      border-top: 5px solid var(--green);
+    }
+
+    .identity.pi {
+      border-top: 5px solid var(--amber);
+    }
+
+    .identity h3 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      color: var(--ink);
+    }
+
+    .identity .tag {
+      display: inline-flex;
+      margin-bottom: 12px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #f2f4f7;
+      color: #344054;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .quote {
+      border-left: 5px solid var(--blue);
+      padding: 16px 20px;
+      background: #f5f8ff;
+      color: #163b8f;
+      font-size: 21px;
+      line-height: 1.45;
+      font-weight: 720;
+    }
+
+    .callout {
+      border: 1px solid #fedf89;
+      border-left: 5px solid var(--amber);
+      border-radius: 8px;
+      padding: 15px 18px;
+      background: #fffbeb;
+      color: #7a3f00;
+      font-size: 16px;
+      line-height: 1.58;
+    }
+
+    .footer {
+      position: absolute;
+      left: 46px;
+      right: 46px;
+      bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #98a2b3;
+      font-size: 14px;
+    }
+
+    .progress {
+      position: fixed;
+      left: 28px;
+      right: 28px;
+      bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #c7ceda;
+    }
+
+    .dot.active {
+      width: 28px;
+      border-radius: 999px;
+      background: var(--blue);
+    }
+
+    .nav-hint {
+      position: fixed;
+      right: 34px;
+      bottom: 18px;
+      color: #667085;
+      font-size: 14px;
+    }
+
+    .title-visual {
+      position: absolute;
+      right: 54px;
+      bottom: 86px;
+      width: 360px;
+      height: 230px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 14px;
+      opacity: 0.96;
+    }
+
+    .tile {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: #fbfcfe;
+      color: var(--ink);
+      font-weight: 760;
+      display: flex;
+      align-items: end;
+    }
+
+    .tile:nth-child(1) {
+      border-top: 5px solid var(--blue);
+    }
+
+    .tile:nth-child(2) {
+      border-top: 5px solid var(--green);
+    }
+
+    .tile:nth-child(3) {
+      border-top: 5px solid var(--amber);
+    }
+
+    .tile:nth-child(4) {
+      border-top: 5px solid var(--red);
+    }
+
+    @media (max-width: 900px) {
+      body {
+        overflow: auto;
+      }
+
+      .deck {
+        height: auto;
+        min-height: 100vh;
+        padding: 14px;
+      }
+
+      .slide {
+        height: auto;
+        min-height: calc(100vh - 62px);
+        padding: 28px 24px 58px;
+      }
+
+      h1 {
+        font-size: 38px;
+      }
+
+      h2 {
+        font-size: 30px;
+      }
+
+      .lead,
+      p {
+        font-size: 18px;
+      }
+
+      .columns,
+      .columns.three,
+      .flow,
+      .stage-list,
+      .identity-map {
+        grid-template-columns: 1fr;
+      }
+
+      .node::after {
+        content: "↓";
+        right: 20px;
+        top: auto;
+        bottom: -30px;
+      }
+
+      .title-visual {
+        display: none;
+      }
+
+      .footer {
+        left: 24px;
+        right: 24px;
+      }
+
+      .nav-hint {
+        display: none;
+      }
+
+      .progress {
+        display: none;
+      }
+
+      .matrix {
+        display: block;
+        border: 0;
+        border-radius: 0;
+        overflow: visible;
+        font-size: 15px;
+      }
+
+      .matrix thead {
+        display: none;
+      }
+
+      .matrix tbody {
+        display: grid;
+        gap: 14px;
+      }
+
+      .matrix tr {
+        display: block;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #fbfcfe;
+        overflow: hidden;
+      }
+
+      .matrix td {
+        display: block;
+        width: 100%;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .matrix td:last-child {
+        border-bottom: 0;
+      }
+
+      .matrix td::before {
+        display: block;
+        margin-bottom: 6px;
+        color: #163b8f;
+        font-weight: 760;
+      }
+
+      .matrix td:nth-child(1)::before {
+        content: "位置";
+      }
+
+      .matrix td:nth-child(2)::before {
+        content: "做什么";
+      }
+
+      .matrix td:nth-child(3)::before {
+        content: "对齐作用";
+      }
+    }
+
+    @media print {
+      body {
+        overflow: visible;
+        background: #fff;
+      }
+
+      .deck {
+        display: block;
+        padding: 0;
+      }
+
+      .slide,
+      .slide.active {
+        display: flex;
+        width: 100%;
+        height: 100vh;
+        min-height: 0;
+        page-break-after: always;
+        border: 0;
+        box-shadow: none;
+      }
+
+      .progress,
+      .nav-hint {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-live="polite">
+    <section class="slide active" data-title="标题">
+      <div class="kicker">MAS 架构汇报</div>
+      <h1>AionUI 到 MAS、Pi 与大模型的对话链路</h1>
+      <p class="lead">重点说明一次对话会经过哪些阶段、哪些组件参与，以及谁负责让 AionUI 会话和 Pi 执行会话保持一致。</p>
+      <div class="title-visual" aria-hidden="true">
+        <div class="tile">AionUI</div>
+        <div class="tile">MAS</div>
+        <div class="tile">Pi SDK</div>
+        <div class="tile">大模型</div>
+      </div>
+      <div class="footer"><span>汇报主题：会话链路与会话对齐</span><span>1 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="总览">
+      <div class="kicker">整体链路</div>
+      <h2>这不是 AionUI 直连大模型，而是经过 MAS 编排</h2>
+      <div class="flow">
+        <div class="node"><strong>AionUI</strong><span>用户界面、输入输出、审批弹窗，是 ACP Client。</span></div>
+        <div class="node"><strong>ACP stdio</strong><span>JSON-RPC 通道，负责协议消息传输。</span></div>
+        <div class="node"><strong>MAS</strong><span>自定义 ACP Agent，负责会话、编排、安全边界。</span></div>
+        <div class="node"><strong>Pi SDK</strong><span>实际 coding agent 内核，负责工具调用与模型交互。</span></div>
+        <div class="node"><strong>大模型</strong><span>生成推理、计划、代码和工具调用意图。</span></div>
+      </div>
+      <div class="quote">MAS 是中间的“会话与治理层”：它把 UI 会话、内部角色、工具权限和 Pi 执行串成一个可审计流程。</div>
+      <div class="footer"><span>AionUI → ACP → MAS → Pi → Model</span><span>2 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="职责">
+      <div class="kicker">组件职责</div>
+      <h2>各层只做自己该做的事</h2>
+      <div class="columns three">
+        <div class="card">
+          <h3>AionUI</h3>
+          <p>负责展示对话、接收用户输入、展示 MAS 回传的更新，并在需要时弹出权限审批。</p>
+        </div>
+        <div class="card">
+          <h3>ACP 层</h3>
+          <p>负责握手、创建 session、接收 prompt、发送 session/update 与 request_permission。</p>
+        </div>
+        <div class="card">
+          <h3>MAS Core</h3>
+          <p>负责 HA / Ego / Superego 编排、上下文构造、验收、返工和审计记录。</p>
+        </div>
+        <div class="card">
+          <h3>Pi Adapter</h3>
+          <p>负责创建 Pi session、映射 Pi 事件、拦截工具权限、把执行结果回传给 MAS。</p>
+        </div>
+        <div class="card">
+          <h3>Pi SDK</h3>
+          <p>负责 coding agent 执行，包括模型调用、工具选择、读写文件和命令执行。</p>
+        </div>
+        <div class="card">
+          <h3>大模型</h3>
+          <p>负责语言推理、任务分解、代码生成、工具调用意图和结构化输出。</p>
+        </div>
+      </div>
+      <div class="footer"><span>职责边界越清楚，会话一致性越容易维护</span><span>3 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="阶段">
+      <div class="kicker">一次对话阶段</div>
+      <h2>从用户输入到最终回复的 8 个阶段</h2>
+      <div class="stage-list">
+        <div class="stage"><div><strong>启动 Agent</strong><span>AionUI 启动 <code>mas acp</code>，通过 stdio 建立 ACP 通道。</span></div></div>
+        <div class="stage"><div><strong>协议握手</strong><span>MAS 返回 agent 能力、模式、配置项等元信息。</span></div></div>
+        <div class="stage"><div><strong>创建会话</strong><span>ACP 层创建或加载 <code>sessionId</code>，并同步给 AionUI。</span></div></div>
+        <div class="stage"><div><strong>接收 prompt</strong><span>AionUI 带着 <code>sessionId</code> 调用 <code>session/prompt</code>。</span></div></div>
+        <div class="stage"><div><strong>HA 路由</strong><span>HA 判断是直接回答、澄清，还是交给 Ego 执行。</span></div></div>
+        <div class="stage"><div><strong>Ego 执行</strong><span>Ego 通过 Pi SDK 与模型和工具交互，产出执行结果。</span></div></div>
+        <div class="stage"><div><strong>Superego 验收</strong><span>基于执行结果和审计证据判断通过、返工或升级人工。</span></div></div>
+        <div class="stage"><div><strong>HA 汇报</strong><span>MAS 把最终结果作为 ACP 更新返回 AionUI。</span></div></div>
+      </div>
+      <div class="footer"><span>每次用户输入是一条 run，但仍属于同一个 session</span><span>4 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="对齐责任">
+      <div class="kicker">核心问题</div>
+      <h2>谁负责把 AionUI 会话和 Pi 会话对齐？</h2>
+      <div class="columns">
+        <div class="card">
+          <h3>答案：MAS 负责</h3>
+          <p>准确地说，ACP Server 是会话身份源头，Core Runner 负责贯穿，Pi Adapter 负责把这个身份标记到 Pi 事件和权限请求上。</p>
+        </div>
+        <div class="card">
+          <h3>不是谁负责</h3>
+          <ul>
+            <li>AionUI 不理解 MAS 内部 HA / Ego / Superego 编排。</li>
+            <li>Pi 不拥有 AionUI 会话身份的最终解释权。</li>
+            <li>大模型只看到被 MAS 构造后的任务上下文。</li>
+          </ul>
+        </div>
+      </div>
+      <div class="quote">同一个会话的标准身份是 MAS 的 <code>sessionId</code>，所有上下文、事件、审批和最终回复都围绕它归档。</div>
+      <div class="footer"><span>会话一致性由 MAS 兜底</span><span>5 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="身份模型">
+      <div class="kicker">身份模型</div>
+      <h2><code>sessionId</code>、<code>runId</code> 和 Pi session 是三种不同身份</h2>
+      <div class="identity-map">
+        <div class="identity session">
+          <span class="tag">会话级</span>
+          <h3>sessionId</h3>
+          <p>表示 AionUI / MAS 里的同一个对话。用于恢复历史、压缩摘要、发送 session/update、记录 messages 和 events。</p>
+        </div>
+        <div class="identity run">
+          <span class="tag">任务级</span>
+          <h3>runId</h3>
+          <p>表示这个会话中的一次执行。用户每发起一次任务，MAS 会创建新的 run，用于审计和状态追踪。</p>
+        </div>
+        <div class="identity pi">
+          <span class="tag">执行级</span>
+          <h3>Pi session</h3>
+          <p>表示某个 HA、Ego 或 Superego 角色的一次 Pi agent 执行实例。当前主要是临时执行载体。</p>
+        </div>
+      </div>
+      <div class="callout">关键关系：一个 <code>sessionId</code> 可以包含多个 <code>runId</code>；一个 <code>runId</code> 内可能创建多个 Pi session，例如 HA 决策、Ego 执行、Superego 评审。</div>
+      <div class="footer"><span>不要把 UI 会话、任务执行和 Pi 实例混成同一个概念</span><span>6 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="对齐机制">
+      <div class="kicker">对齐机制</div>
+      <h2>MAS 用同一个 <code>sessionId</code> 贯穿链路</h2>
+      <table class="matrix">
+        <thead>
+          <tr>
+            <th>位置</th>
+            <th>做什么</th>
+            <th>对齐作用</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>src/acp/server.ts</code></td>
+            <td><code>session/new</code> 创建 <code>mas-${uuid}</code>，<code>session/load</code> 恢复指定会话。</td>
+            <td>建立 AionUI 与 MAS 共同认可的会话 ID。</td>
+          </tr>
+          <tr>
+            <td><code>src/storage.ts</code></td>
+            <td>按 <code>session_id</code> 存储 messages、context、runs、events。</td>
+            <td>让后续 prompt 能恢复同一会话历史。</td>
+          </tr>
+          <tr>
+            <td><code>src/core/runner.ts</code></td>
+            <td><code>run(prompt, options, sink, sessionId)</code> 创建新 <code>runId</code>，但保留原 <code>sessionId</code>。</td>
+            <td>把同一会话内的多次任务执行串起来。</td>
+          </tr>
+          <tr>
+            <td><code>src/pi/pi-sdk.ts</code></td>
+            <td><code>createPiSession({ sessionId, runId, role })</code> 把身份带入 Pi 事件和审批。</td>
+            <td>让 Pi 侧事件回到正确的 AionUI/MAS 会话。</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="footer"><span>对齐不是靠 Pi 自己记住 UI 会话，而是靠 MAS 传递和归档身份</span><span>7 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="审批事件">
+      <div class="kicker">审批与事件回传</div>
+      <h2>工具调用也必须回到同一个会话</h2>
+      <div class="columns">
+        <div class="card">
+          <h3>权限请求</h3>
+          <p>Pi 触发写文件、编辑文件或命令执行时，MAS Pi Adapter 拦截工具调用，并通过 ACP <code>session/request_permission</code> 发给 AionUI。</p>
+        </div>
+        <div class="card">
+          <h3>事件回传</h3>
+          <p>Pi 的 message、tool_call、tool_result 等事件会被 MAS 记录为带 <code>sessionId</code>、<code>runId</code>、<code>role</code> 的审计事件。</p>
+        </div>
+      </div>
+      <div class="flow">
+        <div class="node"><strong>Pi 工具意图</strong><span>模型决定调用工具。</span></div>
+        <div class="node"><strong>MAS 拦截</strong><span>判断读写与命令权限。</span></div>
+        <div class="node"><strong>AionUI 审批</strong><span>展示请求并等待用户决定。</span></div>
+        <div class="node"><strong>继续执行</strong><span>批准后放行，拒绝则反馈失败。</span></div>
+        <div class="node"><strong>审计归档</strong><span>记录到同一个 session/run。</span></div>
+      </div>
+      <div class="footer"><span>审批链路也使用同一个 sessionId</span><span>8 / 9</span></div>
+    </section>
+
+    <section class="slide" data-title="结论">
+      <div class="kicker">结论</div>
+      <h2>当前架构的重点与边界</h2>
+      <div class="columns">
+        <div class="card">
+          <h3>已经明确的责任</h3>
+          <ul>
+            <li>AionUI 管界面和审批。</li>
+            <li>ACP 层管协议和 UI 会话。</li>
+            <li>MAS Core 管编排、上下文和验收。</li>
+            <li>Pi Adapter 管 Pi 事件映射和权限拦截。</li>
+            <li>Pi SDK 和大模型管具体执行与生成。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>当前实现边界</h3>
+          <ul>
+            <li>Pi session 当前更像执行实例，不是 AionUI 会话的长期主记录。</li>
+            <li>跨轮上下文主要由 MAS storage 的摘要和最近消息恢复。</li>
+            <li>会话一致性要继续依赖 <code>sessionId</code> 的贯穿、审计和回放。</li>
+          </ul>
+        </div>
+      </div>
+      <div class="quote">一句话：AionUI 负责“看见会话”，Pi 负责“执行任务”，MAS 负责定义并维护“这是不是同一个会话”。</div>
+      <div class="footer"><span>汇报结束</span><span>9 / 9</span></div>
+    </section>
+  </main>
+
+  <div class="progress" aria-hidden="true"></div>
+  <div class="nav-hint">← / → 切换，Home / End 跳转，Ctrl+P 打印</div>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const progress = document.querySelector(".progress");
+    let current = 0;
+
+    slides.forEach((_, index) => {
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.dataset.index = String(index);
+      progress.appendChild(dot);
+    });
+
+    const dots = Array.from(document.querySelectorAll(".dot"));
+
+    function showSlide(index, syncHash = true) {
+      current = Math.max(0, Math.min(slides.length - 1, index));
+      slides.forEach((slide, slideIndex) => {
+        slide.classList.toggle("active", slideIndex === current);
+      });
+      dots.forEach((dot, dotIndex) => {
+        dot.classList.toggle("active", dotIndex === current);
+      });
+      document.title = `${current + 1}/${slides.length} ${slides[current].dataset.title} - AionUI 到 MAS、Pi 与大模型的会话链路汇报`;
+      if (syncHash) {
+        history.replaceState(null, "", `#slide-${current + 1}`);
+      }
+    }
+
+    function slideIndexFromHash() {
+      const match = location.hash.match(/^#slide-(\d+)$/);
+      if (!match) return 0;
+      return Number(match[1]) - 1;
+    }
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
+        event.preventDefault();
+        showSlide(current + 1);
+      }
+      if (event.key === "ArrowLeft" || event.key === "PageUp") {
+        event.preventDefault();
+        showSlide(current - 1);
+      }
+      if (event.key === "Home") {
+        event.preventDefault();
+        showSlide(0);
+      }
+      if (event.key === "End") {
+        event.preventDefault();
+        showSlide(slides.length - 1);
+      }
+    });
+
+    window.addEventListener("hashchange", () => {
+      showSlide(slideIndexFromHash(), false);
+    });
+
+    showSlide(slideIndexFromHash());
+  </script>
+</body>
+</html>

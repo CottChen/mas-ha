@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MAS Goal 控制面与低熵自主性框架</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --ink: #182231;
+      --muted: #5f6b7a;
+      --line: #b7c2d2;
+      --card: #ffffff;
+      --blue: #276ef1;
+      --cyan: #00a3b4;
+      --green: #169b62;
+      --orange: #d97706;
+      --red: #d64545;
+      --purple: #7c3aed;
+      --shadow: 0 10px 30px rgba(24, 34, 49, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: radial-gradient(circle at top left, #e8f1ff 0, var(--bg) 34rem);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      line-height: 1.55;
+    }
+
+    header {
+      padding: 40px 48px 20px;
+    }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 34px;
+      letter-spacing: -0.04em;
+    }
+
+    .subtitle {
+      max-width: 980px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    main {
+      padding: 0 48px 48px;
+    }
+
+    section {
+      margin-top: 28px;
+      padding: 28px;
+      background: rgba(255, 255, 255, 0.86);
+      border: 1px solid rgba(183, 194, 210, 0.7);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(8px);
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 22px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--blue);
+    }
+
+    .diagram {
+      width: 100%;
+      min-width: 1100px;
+      height: auto;
+      display: block;
+    }
+
+    .scroll {
+      overflow-x: auto;
+      padding-bottom: 6px;
+    }
+
+    .box {
+      fill: #fff;
+      stroke: #c8d2df;
+      stroke-width: 1.2;
+      rx: 16;
+      filter: drop-shadow(0 6px 12px rgba(24, 34, 49, 0.08));
+    }
+
+    .box-blue { fill: #eef5ff; stroke: #8db7ff; }
+    .box-green { fill: #eefaf5; stroke: #7bd7ac; }
+    .box-orange { fill: #fff6e8; stroke: #f0b56d; }
+    .box-red { fill: #fff0f0; stroke: #ee9696; }
+    .box-purple { fill: #f5f0ff; stroke: #baa5ff; }
+    .box-cyan { fill: #eafeff; stroke: #7bdce6; }
+    .box-gray { fill: #f8fafc; stroke: #c8d2df; }
+
+    .title {
+      font-size: 16px;
+      font-weight: 700;
+      fill: var(--ink);
+    }
+
+    .small {
+      font-size: 12px;
+      fill: var(--muted);
+    }
+
+    .tiny {
+      font-size: 11px;
+      fill: var(--muted);
+    }
+
+    .arrow {
+      stroke: #607086;
+      stroke-width: 1.8;
+      fill: none;
+      marker-end: url(#arrow);
+    }
+
+    .arrow-strong {
+      stroke: var(--blue);
+      stroke-width: 2.4;
+      fill: none;
+      marker-end: url(#arrowBlue);
+    }
+
+    .arrow-green {
+      stroke: var(--green);
+      stroke-width: 2.2;
+      fill: none;
+      marker-end: url(#arrowGreen);
+    }
+
+    .arrow-dash {
+      stroke: var(--purple);
+      stroke-width: 2;
+      stroke-dasharray: 7 6;
+      fill: none;
+      marker-end: url(#arrowPurple);
+    }
+
+    .matrix {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .role {
+      padding: 18px;
+      border-radius: 18px;
+      background: #fff;
+      border: 1px solid var(--line);
+    }
+
+    .role h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+    }
+
+    .role p {
+      margin: 7px 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .pill {
+      display: inline-block;
+      margin-bottom: 8px;
+      padding: 3px 9px;
+      color: #fff;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .pill-low { background: var(--green); }
+    .pill-mid { background: var(--orange); }
+    .pill-high { background: var(--red); }
+    .pill-offline { background: var(--purple); }
+
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(240px, 1fr));
+      gap: 16px;
+    }
+
+    .note {
+      padding: 16px;
+      border-left: 5px solid var(--blue);
+      border-radius: 14px;
+      background: #fff;
+    }
+
+    .note h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+    }
+
+    .note ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    footer {
+      padding: 8px 48px 38px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 980px) {
+      header, main, footer { padding-left: 20px; padding-right: 20px; }
+      .matrix, .notes { grid-template-columns: 1fr; }
+      section { padding: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MAS Goal 控制面与低熵自主性框架</h1>
+    <div class="subtitle">
+      改造后的 MAS 把 Goal 作为控制面，把低熵信号作为收敛证据，把角色上下文扰动作为本我跳出固定吸引子的机制；所有外部副作用仍由 Ego 工具链、权限审批和 Superego 审计约束。
+    </div>
+    <div class="legend">
+      <span class="tag"><span class="dot" style="background: var(--blue)"></span>控制面</span>
+      <span class="tag"><span class="dot" style="background: var(--green)"></span>低熵证据</span>
+      <span class="tag"><span class="dot" style="background: var(--purple)"></span>上下文扰动</span>
+      <span class="tag"><span class="dot" style="background: var(--orange)"></span>执行与评审</span>
+      <span class="tag"><span class="dot" style="background: var(--red)"></span>权限与门禁</span>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>总览架构</h2>
+      <div class="scroll">
+        <svg class="diagram" viewBox="0 0 1320 850" role="img" aria-label="MAS Goal 控制面与低熵自主性总览架构图">
+          <defs>
+            <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#607086"></path>
+            </marker>
+            <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#276ef1"></path>
+            </marker>
+            <marker id="arrowGreen" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#169b62"></path>
+            </marker>
+            <marker id="arrowPurple" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#7c3aed"></path>
+            </marker>
+          </defs>
+
+          <rect x="24" y="34" width="1272" height="780" rx="28" fill="rgba(255,255,255,0.48)" stroke="#d4dce8"></rect>
+
+          <rect class="box box-blue" x="70" y="84" width="210" height="92"></rect>
+          <text class="title" x="92" y="118">AionUI / CLI</text>
+          <text class="small" x="92" y="144">用户消息、/goal、/subgoal</text>
+          <text class="tiny" x="92" y="164">只负责入口与可视化</text>
+
+          <rect class="box box-blue" x="340" y="84" width="230" height="92"></rect>
+          <text class="title" x="362" y="118">ACP Server</text>
+          <text class="small" x="362" y="144">协议转换 / session.update</text>
+          <text class="tiny" x="362" y="164">不承载 Goal 业务逻辑</text>
+
+          <rect class="box box-blue" x="640" y="84" width="250" height="92"></rect>
+          <text class="title" x="662" y="118">GoalCommandRouter</text>
+          <text class="small" x="662" y="144">命令解析、候选确认</text>
+          <text class="tiny" x="662" y="164">set / pause / resume / confirm</text>
+
+          <rect class="box box-blue" x="960" y="84" width="250" height="92"></rect>
+          <text class="title" x="982" y="118">GoalController</text>
+          <text class="small" x="982" y="144">状态机、预算、续跑 prompt</text>
+          <text class="tiny" x="982" y="164">active / running / paused / done</text>
+
+          <path class="arrow-strong" d="M280 130 H340"></path>
+          <path class="arrow-strong" d="M570 130 H640"></path>
+          <path class="arrow-strong" d="M890 130 H960"></path>
+
+          <rect class="box box-orange" x="86" y="275" width="210" height="104"></rect>
+          <text class="title" x="108" y="308">HA</text>
+          <text class="small" x="108" y="334">理解用户意图</text>
+          <text class="small" x="108" y="356">生成验收合同</text>
+          <text class="tiny" x="108" y="374">扰动强度：很低</text>
+
+          <rect class="box box-orange" x="390" y="275" width="210" height="104"></rect>
+          <text class="title" x="412" y="308">Ego</text>
+          <text class="small" x="412" y="334">执行、工具调用、验证</text>
+          <text class="small" x="412" y="356">探索替代路径</text>
+          <text class="tiny" x="412" y="374">扰动强度：高，但受权限约束</text>
+
+          <rect class="box box-orange" x="694" y="275" width="230" height="104"></rect>
+          <text class="title" x="716" y="308">Superego</text>
+          <text class="small" x="716" y="334">评审、抽样复核、盲点检查</text>
+          <text class="small" x="716" y="356">给 Ego 返工扰动建议</text>
+          <text class="tiny" x="716" y="374">自身低扰动，给 Ego 可高扰动</text>
+
+          <rect class="box box-purple" x="1010" y="275" width="220" height="104"></rect>
+          <text class="title" x="1032" y="308">Dream</text>
+          <text class="small" x="1032" y="334">离线模式重组经验图</text>
+          <text class="small" x="1032" y="356">生成扰动候选库</text>
+          <text class="tiny" x="1032" y="374">不执行，不裁判事实</text>
+
+          <path class="arrow" d="M1085 176 C1085 220, 195 220, 195 275"></path>
+          <path class="arrow" d="M296 327 H390"></path>
+          <path class="arrow" d="M600 327 H694"></path>
+          <path class="arrow" d="M924 327 H1010"></path>
+          <path class="arrow-dash" d="M1010 300 C900 230, 530 230, 495 275"></path>
+          <text class="tiny" x="668" y="242">ContextPerturbation candidate</text>
+
+          <rect class="box box-red" x="110" y="490" width="250" height="112"></rect>
+          <text class="title" x="132" y="524">Permission / Audit Gate</text>
+          <text class="small" x="132" y="550">写文件、编辑、执行命令审批</text>
+          <text class="small" x="132" y="572">越界写入 / 只读输入门禁</text>
+          <text class="tiny" x="132" y="592">扰动不能授权工具调用</text>
+
+          <rect class="box box-green" x="435" y="490" width="260" height="112"></rect>
+          <text class="title" x="457" y="524">LowEntropySignal</text>
+          <text class="small" x="457" y="550">测试、typecheck、schema、audit</text>
+          <text class="small" x="457" y="572">用户反馈、golden sample、trace</text>
+          <text class="tiny" x="457" y="592">带 source、hash、TTL、脱敏状态</text>
+
+          <rect class="box box-green" x="775" y="490" width="250" height="112"></rect>
+          <text class="title" x="797" y="524">EntropyLedger</text>
+          <text class="small" x="797" y="550">evidence / risk / uncertainty</text>
+          <text class="small" x="797" y="572">informationGain / scoreVersion</text>
+          <text class="tiny" x="797" y="592">评分只做可测试代理指标</text>
+
+          <rect class="box box-blue" x="1085" y="490" width="160" height="112"></rect>
+          <text class="title" x="1107" y="524">GoalJudge</text>
+          <text class="small" x="1107" y="550">done / continue</text>
+          <text class="small" x="1107" y="572">pause / blocked / expire</text>
+          <text class="tiny" x="1107" y="592">门禁优先于模型判断</text>
+
+          <path class="arrow" d="M495 379 C495 440, 235 440, 235 490"></path>
+          <path class="arrow-green" d="M600 379 C600 438, 565 438, 565 490"></path>
+          <path class="arrow-green" d="M810 379 C810 438, 900 438, 900 490"></path>
+          <path class="arrow-strong" d="M1025 546 H1085"></path>
+          <path class="arrow-strong" d="M1165 490 C1165 230, 1085 230, 1085 176"></path>
+
+          <rect class="box box-gray" x="138" y="685" width="230" height="82"></rect>
+          <text class="title" x="160" y="718">SQLite Storage</text>
+          <text class="small" x="160" y="744">goal_tasks / context_perturbations</text>
+          <text class="tiny" x="160" y="762">owner_id / lease_until 原子 claim</text>
+
+          <rect class="box box-gray" x="435" y="685" width="250" height="82"></rect>
+          <text class="title" x="457" y="718">Experience Graph</text>
+          <text class="small" x="457" y="744">任务、结果、证据、扰动、经验</text>
+          <text class="tiny" x="457" y="762">Dream 只操作图，不碰工作区</text>
+
+          <rect class="box box-cyan" x="775" y="685" width="250" height="82"></rect>
+          <text class="title" x="797" y="718">Autonomy Scheduler</text>
+          <text class="small" x="797" y="744">claim due active/running expired Goal</text>
+          <text class="tiny" x="797" y="762">跨会话单实例续跑</text>
+
+          <rect class="box box-green" x="1085" y="685" width="160" height="82"></rect>
+          <text class="title" x="1107" y="718">Candidates</text>
+          <text class="small" x="1107" y="744">eval / policy / skill / doc</text>
+          <text class="tiny" x="1107" y="762">人工确认后晋升</text>
+
+          <path class="arrow" d="M235 602 V685"></path>
+          <path class="arrow-green" d="M565 602 V685"></path>
+          <path class="arrow-green" d="M900 602 V685"></path>
+          <path class="arrow" d="M1025 726 H1085"></path>
+          <path class="arrow-dash" d="M560 685 C560 630, 1120 630, 1120 379"></path>
+          <text class="tiny" x="710" y="650">Dream 从经验图生成上下文扰动候选库</text>
+        </svg>
+      </div>
+    </section>
+
+    <section>
+      <h2>角色上下文扰动矩阵</h2>
+      <div class="matrix">
+        <div class="role">
+          <span class="pill pill-low">HA：很低</span>
+          <h3>意图守门</h3>
+          <p>入口：意图歧义、边界检查、澄清需求。</p>
+          <p>约束：不改变用户目标，不主动扩写任务。</p>
+          <p>输出：澄清问题或验收合同提示。</p>
+        </div>
+        <div class="role">
+          <span class="pill pill-high">Ego：高</span>
+          <h3>执行探索</h3>
+          <p>入口：执行计划、工具顺序、验证策略、反例探针。</p>
+          <p>约束：不绕过权限，扰动必须转成可验证行动。</p>
+          <p>输出：observation plan 或 action variant。</p>
+        </div>
+        <div class="role">
+          <span class="pill pill-mid">Superego：低到中 / 给 Ego 可高</span>
+          <h3>盲点评审</h3>
+          <p>入口：抽样策略、反事实问题、返工扰动建议。</p>
+          <p>约束：最终判断必须回到 AuditPacket 和验证证据。</p>
+          <p>输出：critique 或 Ego perturbation proposal。</p>
+        </div>
+        <div class="role">
+          <span class="pill pill-offline">Dream：中到高 / 离线</span>
+          <h3>长期扰动源</h3>
+          <p>入口：Experience Graph 聚类、失败模式、固定套路检测。</p>
+          <p>约束：不能执行，不能裁判事实，不能直接强注入 Ego。</p>
+          <p>输出：perturbation candidate library。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>闭环规则</h2>
+      <div class="notes">
+        <div class="note">
+          <h3>1. 控制面闭环</h3>
+          <ul>
+            <li>GoalController 维护状态、预算和 continuation prompt。</li>
+            <li>Scheduler 通过 owner_id / lease_until 原子 claim。</li>
+            <li>GoalJudge 只输出控制动作，不直接写用户工作区。</li>
+          </ul>
+        </div>
+        <div class="note" style="border-left-color: var(--purple)">
+          <h3>2. 上下文扰动闭环</h3>
+          <ul>
+            <li>扰动作为隔离数据块进入 prompt，不作为指令。</li>
+            <li>扰动片段低于系统规则、用户目标、合同和权限。</li>
+            <li>复杂扰动策略要用 trace 指标验证后再晋升。</li>
+          </ul>
+        </div>
+        <div class="note" style="border-left-color: var(--green)">
+          <h3>3. 低熵证据闭环</h3>
+          <ul>
+            <li>信号必须有 source、hash、TTL、脱敏和 secret scan。</li>
+            <li>评分使用 entropy_score_v1，可测试、可回放。</li>
+            <li>确定性门禁优先于模型自信和扰动灵感。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    本图对应 `docs/GOAL_ENTROPY_CONTROL.md` 和 `docs/AUTONOMY_TODO.md` 中的 Goal 控制面、低熵信号与角色上下文扰动设计。
+  </footer>
+</body>
+</html>
