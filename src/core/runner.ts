@@ -64,6 +64,7 @@ export class MasRunner {
       if (haDecision.next_action === "answer" || haDecision.next_action === "clarify") {
         const result = haDecision.response;
         this.store.updateRun(runId, "completed", { result, orchestrationMode: mode.id, haDecision });
+        this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "completed", result, reason: haDecision.next_action });
         this.store.addEvent({
           runId,
           sessionId,
@@ -127,7 +128,7 @@ export class MasRunner {
         if (egoResult.status === "blocked" || egoResult.status === "needs_attention") {
           const result = `HA 终验未通过：Ego 未能完成执行。\n\n${egoResult.final_response}`;
           this.store.updateRun(runId, "needs_attention", { result, egoResult, orchestrationMode: mode.id });
-          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "needs_attention", result, egoResult, reason: egoResult.status });
+          this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, reason: egoResult.status });
           sink.done(result);
           return { runId, result };
         }
@@ -135,7 +136,7 @@ export class MasRunner {
         if (!mode.usesSuperego) {
           const result = `HA 终验通过（${mode.name} 模式，未启用 Superego 评审）。\n\n${finalEgoOutput}`;
           this.store.updateRun(runId, "completed", { result, egoResult, orchestrationMode: mode.id });
-          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "completed", result, egoResult, reason: "superego_disabled" });
+          this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "completed", result, egoResult, reason: "superego_disabled" });
           this.store.addEvent({
             runId,
             sessionId,
@@ -197,14 +198,14 @@ export class MasRunner {
         if (critique.next_action === "escalate") {
           const result = `HA 终验未通过：Superego 要求人工介入。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
           this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
-          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "needs_attention", result, egoResult, critique, reason: "superego_escalate" });
+          this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique, reason: "superego_escalate" });
           sink.done(result);
           return { runId, result };
         }
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
           const result = `HA 终验通过。\n\n${finalEgoOutput}`;
           this.store.updateRun(runId, "completed", { result, critique, egoResult });
-          this.recordAutonomyClosure({ runId, sessionId, prompt, status: "completed", result, egoResult, critique, reason: "superego_accept" });
+          this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "completed", result, egoResult, critique, reason: "superego_accept" });
           this.store.addEvent({
             runId,
             sessionId,
@@ -220,7 +221,7 @@ export class MasRunner {
 
       const result = `HA 终验未通过：达到最大返工轮次。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
       this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
-      this.recordAutonomyClosure({ runId, sessionId, prompt, status: "needs_attention", result, egoResult, critique, reason: "max_iterations" });
+      this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique, reason: "max_iterations" });
       this.store.addEvent({
         runId,
         sessionId,
@@ -238,6 +239,7 @@ export class MasRunner {
         this.recordAutonomyClosure({
           runId,
           sessionId,
+          goalId: options.goalId,
           prompt,
           status: "failed",
           result: err.message,
@@ -262,6 +264,7 @@ export class MasRunner {
   private recordAutonomyClosure(input: {
     runId: string;
     sessionId?: string;
+    goalId?: string;
     prompt: string;
     status: "completed" | "needs_attention" | "failed";
     result: string;
@@ -271,6 +274,17 @@ export class MasRunner {
   }): void {
     try {
       this.autonomy.recordTaskClosure(input);
+      if (input.goalId) {
+        const goal = this.store.getGoal(input.goalId);
+        if (goal) {
+          this.store.updateGoal({
+            goalId: input.goalId,
+            lastRunId: input.runId,
+            turnsUsed: goal.turnsUsed + 1,
+            consecutiveFailures: input.status === "completed" ? 0 : goal.consecutiveFailures + 1,
+          });
+        }
+      }
     } catch (error) {
       this.store.audit({
         runId: input.runId,

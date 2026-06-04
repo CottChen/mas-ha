@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { JsonRpcPeer } from "./json-rpc.js";
 import { AcpStreamSink } from "./acp-sink.js";
+import { GoalCommandRouter } from "../core/goal-command-router.js";
 import { normalizeOrchestrationMode, orchestrationModeList } from "../core/orchestration.js";
 import { ReflectionScheduler } from "../core/reflection-scheduler.js";
 import { MasRunner } from "../core/runner.js";
@@ -34,6 +35,7 @@ export function startAcpServer(options: AcpServerOptions): void {
   const peer = new JsonRpcPeer(process.stdin, process.stdout);
   const store = new MasStore();
   const runner = new MasRunner();
+  const goalRouter = new GoalCommandRouter(store);
   const scheduler = options.reflectionScheduler
     ? new ReflectionScheduler(store, {
         intervalMs: options.reflectionIntervalMs,
@@ -124,6 +126,35 @@ export function startAcpServer(options: AcpServerOptions): void {
       };
     }
 
+    const goalCommand = parseGoalSlashCommand(prompt);
+    if (goalCommand) {
+      const context = {
+        cwd: session.cwd,
+        sessionId,
+        approvalMode: session.approvalMode,
+        orchestrationMode: session.orchestrationMode,
+        maxTurns: options.maxIterations,
+      };
+      const commandResult =
+        goalCommand.name === "goal" ? goalRouter.handleGoal(goalCommand.args, context) : goalRouter.handleSubgoal(goalCommand.args, context);
+      sink.text(commandResult.text);
+      store.addMessage({
+        sessionId,
+        role: "assistant",
+        content: commandResult.text,
+        metadata: { source: "mas", command: goalCommand.name, ok: commandResult.ok },
+      });
+      return {
+        stopReason: "end_turn",
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+      };
+    }
+
+    const activeGoal = store.listGoals({ cwd: session.cwd, statuses: ["active"], limit: 1 })[0];
     const result = await runner.run(
       prompt,
       {
@@ -132,6 +163,7 @@ export function startAcpServer(options: AcpServerOptions): void {
         orchestrationMode: session.orchestrationMode,
         maxIterations: options.maxIterations,
         signal: abort.signal,
+        goalId: activeGoal?.goalId,
         conversationHistory: session.context.turns,
         conversationSummary: session.context.summary,
         availableSkills: session.skills,
@@ -267,6 +299,40 @@ function isCompactCommand(prompt: string): boolean {
   return prompt.trim().startsWith("/compact");
 }
 
+function parseGoalSlashCommand(prompt: string): { name: "goal" | "subgoal"; args: string[] } | undefined {
+  const trimmed = prompt.trim();
+  if (!trimmed.startsWith("/goal") && !trimmed.startsWith("/subgoal")) return undefined;
+  const [head, ...args] = splitCommand(trimmed);
+  if (head === "/goal") return { name: "goal", args };
+  if (head === "/subgoal") return { name: "subgoal", args };
+  return undefined;
+}
+
+function splitCommand(text: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let quote: string | undefined;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index];
+    if ((char === "\"" || char === "'") && !quote) {
+      quote = char;
+      continue;
+    }
+    if (quote === char) {
+      quote = undefined;
+      continue;
+    }
+    if (/\s/.test(char) && !quote) {
+      if (current) result.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current) result.push(current);
+  return result;
+}
+
 async function safeDiscoverSkills(cwd: string): Promise<SkillSummary[]> {
   try {
     return await discoverSkills(cwd);
@@ -316,6 +382,8 @@ function queueAvailableCommands(peer: JsonRpcPeer, sessionId: string, skills: Sk
       sessionUpdate: "available_commands_update",
       availableCommands: [
         { name: "compact", description: "压缩当前 MAS 会话上下文", input: { hint: "可选压缩重点" } },
+        { name: "goal", description: "查看或设置当前 Goal 控制面", input: { hint: "status | pause | resume | clear | <objective>" } },
+        { name: "subgoal", description: "管理当前 Goal 的验收子目标", input: { hint: "add/list/confirm/reject/remove" } },
         ...skillCommands,
       ],
     },

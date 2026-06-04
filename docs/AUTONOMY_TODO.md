@@ -13,12 +13,12 @@
 
 ## 低熵自主改进底座
 
-- [ ] 新增 `EntropyLedger` 类型和 `entropy_ledgers` 表，记录 0 到 1 归一化的 uncertainty、evidence、risk、informationGain、阈值版本和 nextBestObservation。
-- [ ] 新增 `LowEntropySignal` 类型和 `low_entropy_signals` 表，统一记录 test、typecheck、lint、schema、audit、approval、user_feedback、production_trace 和 golden_sample。
-- [ ] 为 `LowEntropySignal` 增加 source URI、hash、capturedAt、TTL、retentionPolicy、sensitivity、redactionStatus 和 secretScanStatus。
-- [ ] 新增 `ContextPerturbation` 类型和 `context_perturbations` 表，记录 role、trigger、injectionPoint、contextPatchHash、status、safetyGateResult、appliedRunId 和 producedSignalId。
+- [x] 新增 `EntropyLedger` 类型和 `entropy_ledgers` 表，记录 0 到 1 归一化的 uncertainty、evidence、risk、informationGain、阈值版本和 nextBestObservation。
+- [x] 新增 `LowEntropySignal` 类型和 `low_entropy_signals` 表，统一记录 test、typecheck、lint、schema、audit、approval、user_feedback、production_trace 和 golden_sample。
+- [x] 为 `LowEntropySignal` 增加 source URI、hash、capturedAt、TTL、retentionPolicy、sensitivity、redactionStatus 和 secretScanStatus。
+- [x] 新增 `ContextPerturbation` 类型和 `context_perturbations` 表，记录 role、trigger、injectionPoint、contextPatchHash、status、safetyGateResult、appliedRunId 和 producedSignalId。
 - [ ] 每次普通 run 结束后，即使没有 Goal，也必须将 `AuditPacket`、Ego verification、审批拒绝和用户纠正转换为低熵信号。
-- [ ] Experience Graph 增加 LowEntropySignal 与 run/result/experience 的因果边；`goal_id` 只作为可选关联。
+- [x] Experience Graph 增加 LowEntropySignal 与 run/result/experience 的因果边；`goal_id` 只作为可选关联。
 - [ ] 扩展 HA 验收合同，逐步结构化 `objective`、只读输入、允许输出、禁止状态、完成判据、失败判据、必须证据和 validator。
 - [ ] 扩展 Ego prompt，要求每轮优先选择最大信息增益动作，并在结构化结果中报告关键证据缺口。
 - [ ] 扩展 Superego typed tool，输出 `entropyDelta`、`evidenceQuality`、`remainingUncertainty` 和 `nextBestObservation`。
@@ -34,13 +34,13 @@
 
 ## Goal 可控面
 
-- [ ] 新增 `goal_tasks` 和 `goal_subgoals` 表，记录 Goal 状态、risk/novelty/entropy/perturbation 预算、验收合同、claim lease、最近 run 和下一次唤醒时间。
-- [ ] 新增 `mas goal set/status/pause/resume/clear/list` 命令。
-- [ ] 新增 `mas subgoal add/list/confirm/reject/remove` 命令；HA/Superego 只能创建 candidate，用户确认后才能 active。
-- [ ] 新增 `GoalCommandRouter`，ACP 层只识别 `/goal` 和 `/subgoal` 并调用控制面接口。
-- [ ] 通过 `session/update` 展示当前 Goal 状态，展示数据来自 Goal 控制面查询结果。
+- [x] 新增 `goal_tasks` 和 `goal_subgoals` 表，记录 Goal 状态、risk/novelty/entropy/perturbation 预算、验收合同、claim lease、最近 run 和下一次唤醒时间。
+- [x] 新增 `mas goal set/status/pause/resume/clear/list` 命令。
+- [x] 新增 `mas subgoal add/list/confirm/reject/remove` 命令；HA/Superego 只能创建 candidate，用户确认后才能 active。
+- [x] 新增 `GoalCommandRouter`，ACP 层只识别 `/goal` 和 `/subgoal` 并调用控制面接口。
+- [x] 通过 `session/update` 展示当前 Goal 状态，展示数据来自 Goal 控制面查询结果。
 - [ ] Goal 状态变化必须写入 audit 和 events，覆盖创建、暂停、恢复、完成、阻塞、过期和清除。
-- [ ] Goal 不影响无 Goal 的 reflection、dream、prune 和 consolidation 自主改进闭环。
+- [x] Goal 不影响无 Goal 的 reflection、dream、prune 和 consolidation 自主改进闭环。
 
 ## Goal Judge 和受控续跑
 

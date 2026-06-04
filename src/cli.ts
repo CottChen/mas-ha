@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { startAcpServer } from "./acp/server.js";
 import { AutonomyLoop } from "./core/autonomy.js";
+import { GoalCommandRouter } from "./core/goal-command-router.js";
 import { normalizeOrchestrationMode, orchestrationModeList } from "./core/orchestration.js";
 import { ReflectionScheduler } from "./core/reflection-scheduler.js";
 import { MasRunner } from "./core/runner.js";
@@ -50,9 +51,36 @@ async function main(): Promise<void> {
           approvalMode,
           orchestrationMode,
           maxIterations,
+          goalId: typeof flags.get("goal-id") === "string" ? String(flags.get("goal-id")) : undefined,
         },
         new ConsoleSink(approvalMode),
       );
+      return;
+    }
+    case "goal": {
+      const router = new GoalCommandRouter();
+      const result = router.handleGoal(goalCommandArgs(args, flags), {
+        cwd: String(flags.get("cwd") ?? process.cwd()),
+        goalId: typeof flags.get("goal-id") === "string" ? String(flags.get("goal-id")) : undefined,
+        approvalMode,
+        orchestrationMode,
+        maxTurns: Number(flags.get("max-turns") ?? 20),
+      });
+      console.log(result.text);
+      if (!result.ok) process.exitCode = 1;
+      return;
+    }
+    case "subgoal": {
+      const router = new GoalCommandRouter();
+      const result = router.handleSubgoal(subgoalCommandArgs(args, flags), {
+        cwd: String(flags.get("cwd") ?? process.cwd()),
+        goalId: typeof flags.get("goal-id") === "string" ? String(flags.get("goal-id")) : undefined,
+        approvalMode,
+        orchestrationMode,
+        maxTurns: Number(flags.get("max-turns") ?? 20),
+      });
+      console.log(result.text);
+      if (!result.ok) process.exitCode = 1;
       return;
     }
     case "doctor":
@@ -174,6 +202,11 @@ function printHelp(): void {
   mas acp [--approve-all] [--approval-mode-policy fixed|mutable] [--reflection-scheduler] [--reflection-interval 60000] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
   mas --experimental-acp [--approve-all] [--approval-mode-policy fixed|mutable] [--reflection-scheduler] [--reflection-interval 60000] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
   mas run <task> [--cwd <dir>] [--approve-all] [--deny-writes] [--orchestration-mode ha-ego-superego]
+  mas goal set <objective> [--cwd <dir>] [--max-turns 20]
+  mas goal status|pause|resume|clear [--goal-id <id>] [--cwd <dir>]
+  mas goal list [--status active,paused,blocked] [--cwd <dir>]
+  mas subgoal add <criterion> [--goal-id <id>] [--cwd <dir>]
+  mas subgoal list|confirm|reject|remove|clear [index|subgoal-id] [--goal-id <id>] [--cwd <dir>]
   mas status [--limit 20]
   mas reflect due|list|dream [--limit 20]
   mas autonomy daemon|tick|status [--interval 60000] [--limit 20]
@@ -274,6 +307,25 @@ function normalizeApprovalModePolicy(value: string | boolean | undefined): Appro
 function normalizeReflectionStatus(value: string | boolean | undefined): ReflectionStatus | undefined {
   if (value === "scheduled" || value === "running" || value === "completed" || value === "cancelled" || value === "pruned") return value;
   return undefined;
+}
+
+function goalCommandArgs(args: string[], flags: Map<string, string | boolean>): string[] {
+  const parts = positional(args);
+  const subcommand = parts[0];
+  if (subcommand === "list" && typeof flags.get("status") === "string") return [subcommand, String(flags.get("status"))];
+  if (["status", "pause", "resume", "clear"].includes(subcommand ?? "") && typeof flags.get("goal-id") === "string") {
+    return [subcommand!, String(flags.get("goal-id"))];
+  }
+  return parts;
+}
+
+function subgoalCommandArgs(args: string[], flags: Map<string, string | boolean>): string[] {
+  const parts = positional(args);
+  const subcommand = parts[0];
+  if (["list", "clear"].includes(subcommand ?? "") && typeof flags.get("goal-id") === "string") {
+    return [subcommand!, String(flags.get("goal-id"))];
+  }
+  return parts;
 }
 
 main().catch((error) => {

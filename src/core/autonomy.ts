@@ -1,9 +1,11 @@
 import { MasStore } from "../storage.js";
 import type { CritiqueResult, EgoResult, ReflectionTask } from "../types.js";
+import { recordRunEntropy } from "./entropy.js";
 
 type RunExperienceInput = {
   runId: string;
   sessionId?: string;
+  goalId?: string;
   prompt: string;
   status: "completed" | "needs_attention" | "failed";
   result: string;
@@ -24,7 +26,7 @@ export class AutonomyLoop {
       runId: input.runId,
       title: summarizeTitle(input.prompt),
       summary: input.prompt.slice(0, 1000),
-      payload: { sessionId: input.sessionId },
+      payload: { sessionId: input.sessionId, goalId: input.goalId },
     });
     const resultNodeId = this.store.addExperienceNode({
       type: "result",
@@ -49,6 +51,29 @@ export class AutonomyLoop {
     });
     this.store.addExperienceEdge({ fromNodeId: resultNodeId, toNodeId: experienceNodeId, type: "generalized_to", weight: 0.7, confidence: 0.7 });
 
+    const ledger = recordRunEntropy(this.store, input);
+    const signals = this.store
+      .listLowEntropySignals({ runId: input.runId, limit: 100 })
+      .filter((signal) => ledger.signalIds.includes(signal.signalId));
+    for (const signal of signals) {
+      const signalNodeId = this.store.addExperienceNode({
+        nodeId: signal.signalId,
+        type: "signal",
+        runId: input.runId,
+        status: signal.type,
+        title: `低熵信号：${signal.type}`,
+        summary: signal.summary,
+        payload: { signal, ledgerId: ledger.ledgerId },
+      });
+      this.store.addExperienceEdge({ fromNodeId: experienceNodeId, toNodeId: signalNodeId, type: "observed", weight: 0.8, confidence: signal.confidence });
+    }
+    this.store.audit({
+      runId: input.runId,
+      actor: "superego",
+      action: "entropy_ledger_recorded",
+      payload: { ledgerId: ledger.ledgerId, signalIds: ledger.signalIds, recommendation: ledger.recommendation },
+    });
+
     const reflection = planReflection(input);
     const reflectionId = this.store.addReflectionTask({
       sourceRunId: input.runId,
@@ -64,6 +89,26 @@ export class AutonomyLoop {
         expectedSignal: reflection.expectedSignal,
         noNewSignalAction: "cancel",
         createdBy: "superego",
+      },
+    });
+    this.store.addAutonomyJob({
+      jobId: reflectionId,
+      type: "reflection",
+      sourceRunId: input.runId,
+      goalId: input.goalId,
+      triggerAt: reflection.triggerAt,
+      budget: {
+        depth: 0,
+        maxDepth: reflection.maxDepth,
+        maxChildren: 1,
+        wakeups: 0,
+        maxWakeups: reflection.maxWakeups,
+        allowNested: true,
+      },
+      payload: {
+        reflectionTaskCompat: true,
+        entropyReason: reflection.entropyReason,
+        expectedSignal: reflection.expectedSignal,
       },
     });
     const reflectionNodeId = this.store.addExperienceNode({

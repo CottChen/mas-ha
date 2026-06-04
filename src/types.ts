@@ -8,11 +8,47 @@ export type { OrchestrationMode } from "./core/orchestration.js";
 
 export type MasEventSource = "mas" | "pi";
 export type MasEventActor = RoleName | "system" | "user" | "tool" | "pi";
-export type ExperienceNodeType = "task" | "execution_trace" | "result" | "experience" | "reflection" | "dream";
-export type ExperienceEdgeType = "caused" | "produced" | "generalized_to" | "scheduled" | "reflected_on" | "dream_pruned";
+export type ExperienceNodeType =
+  | "task"
+  | "execution_trace"
+  | "result"
+  | "experience"
+  | "reflection"
+  | "dream"
+  | "goal"
+  | "signal"
+  | "eval_candidate";
+export type ExperienceEdgeType =
+  | "caused"
+  | "produced"
+  | "generalized_to"
+  | "scheduled"
+  | "reflected_on"
+  | "dream_pruned"
+  | "observed"
+  | "controls";
 export type ReflectionStatus = "scheduled" | "running" | "completed" | "cancelled" | "pruned";
-export type AutonomyJobType = "reflection" | "dream" | "prune" | "consolidation";
+export type AutonomyJobType = "reflection" | "dream" | "prune" | "consolidation" | "goal_continuation";
+export type AutonomyJobStatus = "scheduled" | "running" | "completed" | "cancelled" | "blocked" | "pruned";
 export type AutonomyJobDecision = "complete" | "reschedule" | "cancel" | "escalate";
+export type GoalStatus = "active" | "paused" | "done" | "blocked" | "expired" | "cleared";
+export type GoalRunStatus = "scheduled" | "running" | "completed" | "failed" | "cancelled";
+export type GoalRunTrigger = "user" | "scheduler" | "resume" | "retry";
+export type SubgoalStatus = "candidate" | "active" | "satisfied" | "rejected" | "removed";
+export type GoalSubgoalSource = "user" | "ha" | "superego";
+export type LowEntropySignalType =
+  | "test_result"
+  | "typecheck_result"
+  | "lint_result"
+  | "schema_validation"
+  | "audit_finding"
+  | "user_feedback"
+  | "approval_decision"
+  | "production_trace"
+  | "golden_sample"
+  | "diff"
+  | "policy_violation"
+  | "external_fact";
 
 export interface MasEventInput {
   runId: string;
@@ -73,12 +109,276 @@ export interface ReflectionTask extends Required<Omit<ReflectionTaskInput, "sour
   updatedAt: string;
 }
 
+export interface AutonomyBudget {
+  depth: number;
+  maxDepth: number;
+  wakeups: number;
+  maxWakeups: number;
+  maxChildren: number;
+  allowNested: boolean;
+}
+
+export interface AutonomyJobInput {
+  jobId?: string;
+  type: AutonomyJobType;
+  status?: AutonomyJobStatus;
+  sourceRunId?: string;
+  goalId?: string;
+  triggerAt: string;
+  budget?: Partial<AutonomyBudget>;
+  payload?: unknown;
+}
+
+export interface AutonomyJob {
+  jobId: string;
+  type: AutonomyJobType;
+  status: AutonomyJobStatus;
+  sourceRunId?: string;
+  goalId?: string;
+  triggerAt: string;
+  ownerId?: string;
+  leaseUntil?: string;
+  budget: AutonomyBudget;
+  payload?: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SchedulerLease {
   name: string;
   ownerId: string;
   heartbeatAt: string;
   expiresAt: string;
   metadata?: unknown;
+}
+
+export interface GoalBudget {
+  max: number;
+  used: number;
+  unit: "turn" | "token" | "ms" | "count" | "risk_point";
+}
+
+export interface GoalAcceptanceContract {
+  objective: string;
+  readonlyInputs: string[];
+  allowedOutputs: string[];
+  forbiddenStates: string[];
+  doneCriteria: string[];
+  failureCriteria: string[];
+  requiredEvidence: string[];
+  validators: Array<{
+    id: string;
+    command?: string;
+    kind: "test" | "typecheck" | "lint" | "schema" | "policy" | "manual";
+    required: boolean;
+  }>;
+  riskNotes: string[];
+  rawText: string;
+}
+
+export interface GoalRecord {
+  goalId: string;
+  sessionId?: string;
+  cwd: string;
+  title: string;
+  objective: string;
+  status: GoalStatus;
+  requestedApprovalMode: ApprovalMode;
+  orchestrationMode: OrchestrationMode;
+  maxTurns: number;
+  turnsUsed: number;
+  maxWallClockMs?: number;
+  maxConsecutiveFailures: number;
+  consecutiveFailures: number;
+  acceptanceContract: GoalAcceptanceContract;
+  riskBudget: GoalBudget;
+  noveltyBudget: GoalBudget;
+  entropyBudget: GoalBudget;
+  perturbationBudget: GoalBudget;
+  nextWakeAt?: string;
+  expiresAt?: string;
+  lastRunId?: string;
+  lastGoalRunId?: string;
+  ownerId?: string;
+  leaseUntil?: string;
+  permissionContextHash?: string;
+  payload?: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalInput {
+  goalId?: string;
+  sessionId?: string;
+  cwd: string;
+  title: string;
+  objective: string;
+  status?: GoalStatus;
+  requestedApprovalMode: ApprovalMode;
+  orchestrationMode: OrchestrationMode;
+  maxTurns?: number;
+  maxWallClockMs?: number;
+  maxConsecutiveFailures?: number;
+  acceptanceContract: GoalAcceptanceContract;
+  riskBudget?: GoalBudget;
+  noveltyBudget?: GoalBudget;
+  entropyBudget?: GoalBudget;
+  perturbationBudget?: GoalBudget;
+  nextWakeAt?: string;
+  expiresAt?: string;
+  permissionContextHash?: string;
+  payload?: unknown;
+}
+
+export interface GoalJudgeResult {
+  decision: "done" | "continue" | "pause" | "blocked" | "expire";
+  reason: string;
+  satisfiedCriteria: string[];
+  unsatisfiedCriteria: string[];
+  requiredNextSignal?: string;
+  confidence: number;
+  deterministicGates: string[];
+}
+
+export interface GoalRunRecord {
+  goalRunId: string;
+  goalId: string;
+  masRunId?: string;
+  ownerId: string;
+  status: GoalRunStatus;
+  trigger: GoalRunTrigger;
+  startedAt?: string;
+  endedAt?: string;
+  judgeResult?: GoalJudgeResult;
+  payload?: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalSubgoal {
+  subgoalId: string;
+  goalId: string;
+  text: string;
+  status: SubgoalStatus;
+  source: GoalSubgoalSource;
+  requiresUserConfirmation: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LowEntropySignalInput {
+  signalId?: string;
+  runId?: string;
+  goalId?: string;
+  type: LowEntropySignalType;
+  summary: string;
+  confidence: number;
+  scope: "run" | "goal" | "project" | "global";
+  freshness: "current" | "recent" | "stale";
+  sourceKind: "local_file" | "command_output" | "user_input" | "approval" | "trace" | "external_uri" | "derived";
+  sourceUri?: string;
+  sourceHash?: string;
+  capturedAt?: string;
+  expiresAt?: string;
+  retentionPolicy: "ephemeral" | "project" | "long_term";
+  sensitivity: "public" | "internal" | "confidential" | "secret";
+  redactionStatus: "not_needed" | "redacted" | "blocked";
+  secretScanStatus: "not_scanned" | "passed" | "blocked";
+  payload?: unknown;
+}
+
+export interface LowEntropySignal extends Required<Omit<LowEntropySignalInput, "runId" | "goalId" | "sourceUri" | "sourceHash" | "expiresAt" | "payload">> {
+  runId?: string;
+  goalId?: string;
+  sourceUri?: string;
+  sourceHash?: string;
+  expiresAt?: string;
+  payload?: unknown;
+  createdAt: string;
+}
+
+export interface EntropyLedgerInput {
+  ledgerId?: string;
+  runId: string;
+  goalId?: string;
+  scoreVersion?: "entropy_score_v1";
+  openQuestions?: string[];
+  signalIds: string[];
+  uncertaintyScore: number;
+  evidenceScore: number;
+  riskScore: number;
+  informationGainScore: number;
+  evidenceQuality: number;
+  nextBestObservation?: string;
+  recommendation: "continue" | "revise" | "pause" | "escalate";
+  deterministicGates: string[];
+  payload?: unknown;
+}
+
+export interface EntropyLedger extends Required<Omit<EntropyLedgerInput, "ledgerId" | "goalId" | "scoreVersion" | "openQuestions" | "nextBestObservation" | "payload">> {
+  ledgerId: string;
+  goalId?: string;
+  scoreVersion: "entropy_score_v1";
+  openQuestions: string[];
+  nextBestObservation?: string;
+  payload?: unknown;
+  createdAt: string;
+}
+
+export interface ContextPerturbation {
+  perturbationId: string;
+  runId?: string;
+  goalId?: string;
+  kind: "self" | "proposal";
+  targetRole: "ha" | "ego" | "superego" | "dream";
+  generatedBy: "ha" | "ego" | "superego" | "dream" | "goal_controller";
+  trigger: string;
+  injectionPoint:
+    | "intent_check"
+    | "contract_hint"
+    | "execution_plan"
+    | "tool_order"
+    | "validation_strategy"
+    | "counterexample_probe"
+    | "review_sampling"
+    | "blindspot_check"
+    | "dream_candidate_library";
+  type:
+    | "perspective_shift"
+    | "counterexample_probe"
+    | "analogy"
+    | "random_sample"
+    | "constraint_relaxation"
+    | "alternative_plan"
+    | "mutation_prompt"
+    | "historical_near_miss"
+    | "cross_domain_pattern";
+  summary: string;
+  contextPatchHash: string;
+  sourceRefs: string[];
+  status: "candidate" | "approved" | "applied" | "rejected" | "retired";
+  safetyGateResult: "passed" | "blocked" | "needs_review";
+  harmlessness: "context_only";
+  targetAttractor: string;
+  expectedNovelty: number;
+  maxRisk: "low" | "medium";
+  appliedRunId?: string;
+  producedSignalId?: string;
+  payload?: unknown;
+}
+
+export interface EvalCandidate {
+  candidateId: string;
+  sourceRunId: string;
+  goalId?: string;
+  title: string;
+  failureMode: string;
+  inputFixture: unknown;
+  expectedAssertions: string[];
+  validatorCommand?: string;
+  regressionScope: "unit" | "integration" | "e2e" | "policy" | "manual";
+  confidence: number;
+  status: "candidate" | "promoted" | "rejected" | "retired";
 }
 
 export interface MemoryArtifact {
@@ -107,6 +407,7 @@ export interface MasRunOptions {
   approvalMode: ApprovalMode;
   orchestrationMode: OrchestrationMode;
   maxIterations: number;
+  goalId?: string;
   model?: string;
   signal?: AbortSignal;
   conversationHistory?: ConversationTurn[];
