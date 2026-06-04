@@ -11,7 +11,7 @@
 - SQLite 记录 run、agent_run、approval、audit、message、session_context 和 append-only events。
 - `feature/comm-versioning` 已开始记录 Pi 运行时事件和 MAS 语义事件，详见 `docs/COMM_VERSIONING.md`。
 
-当前实现更偏“可验证架构骨架”，还不是生产级长任务控制面。
+当前实现更偏“可验证架构骨架”，还不是生产级持续自主改进系统；Goal 控制面也尚未接入。
 
 ## 近期目标
 
@@ -27,6 +27,11 @@
   - 引入结构化 JSON schema 校验。
   - 读取 git diff、工具结果、检查结果后再评分。
   - 对重复批注和低价值风格修改做抑制。
+- 引入低熵自主改进底座与可选 Goal 控制面：
+  - 为每轮 run 记录 `EntropyLedger` 和低熵信号，不依赖用户必须设置 Goal。
+  - 将 run 后验证、审计、审批和用户反馈写入 Experience Graph 和持续改进候选。
+  - 增加可审计的 `goal` / `subgoal` 状态管理，让 Goal 只作为人的可控面。
+  - 有 Goal 时，让 Goal Judge 基于证据、预算和审计门禁决定继续、暂停、完成或阻塞。
 - 增加测试：
   - JSON-RPC 协议单元测试。
   - Pi 事件映射测试。
@@ -48,6 +53,10 @@
   - 支持为 HA、Ego、Superego 分别配置模型、thinking level 和工具集。
   - 支持多 Ego 子任务串行或受控并行。
   - 引入失败模式记忆，但不让记忆层成为事实来源。
+- 自主改进飞轮：
+  - 将高价值失败沉淀为 eval、policy、skill 或 doc candidate。
+  - 让 Dream 从反思文本生成器升级为低熵经验压缩器。
+  - 按信息增益、风险和预算调度 Reflection、Dream、Consolidation 和可选 Goal continuation。
 - AionUI 体验：
   - 优化 tool_call / tool_call_update 展示内容。
   - 支持计划、上下文用量、最终验收状态的专门展示。
@@ -86,4 +95,4 @@
 - ACP 具体字段在不同客户端/后端之间存在差异，需要持续做兼容测试。
 - Superego 如果没有结构化校验和停止条件，容易出现反复返工。
 - 高自主模式下写文件和执行命令风险较高，必须保留审计和显式开关。
-- 长任务、断连恢复、并发任务在 SQLite MVP 中只能有限支持。
+- 持续自主调度、长任务控制面、断连恢复和并发任务在 SQLite MVP 中只能有限支持。
