@@ -48,6 +48,40 @@ function collectSignals(store: MasStore, input: RunEntropyInput): LowEntropySign
     }));
   }
 
+  for (const audit of store.listAuditLog(input.runId, 300)) {
+    if (audit.action === "audit_packet_built") {
+      const packet = asRecord(audit.payload);
+      const findings = Array.isArray(packet.findings) ? packet.findings : [];
+      if (findings.length === 0) {
+        signals.push(baseSignal(input, {
+          type: "audit_finding",
+          summary: "AuditPacket built with no blocking findings.",
+          confidence: 0.75,
+          sourceKind: "derived",
+          payload: { action: audit.action, findingCount: 0 },
+        }));
+      }
+      for (const finding of findings) {
+        signals.push(baseSignal(input, {
+          type: "audit_finding",
+          summary: `AuditPacket finding: ${JSON.stringify(finding).slice(0, 700)}`,
+          confidence: 0.85,
+          sourceKind: "derived",
+          payload: finding,
+        }));
+      }
+    }
+    if (audit.action === "boundary_snapshot_baseline") {
+      signals.push(baseSignal(input, {
+        type: "schema_validation",
+        summary: "Boundary baseline snapshot captured before Ego execution.",
+        confidence: 0.55,
+        sourceKind: "derived",
+        payload: audit.payload,
+      }));
+    }
+  }
+
   for (const file of input.egoResult?.changed_files ?? []) {
     signals.push(baseSignal(input, {
       type: "diff",
@@ -97,11 +131,13 @@ function scoreLedger(input: RunEntropyInput, signalIds: string[]): Parameters<Ma
 
   const passed = verification.filter((item) => item.result === "passed").length;
   const evidenceScore = clamp01(passed * 0.25 + (input.critique?.next_action === "accept" ? 0.2 : 0) + signalIds.length * 0.05);
+  const modelEvidenceQuality = input.critique?.evidenceQuality;
+  const remainingUncertainty = input.critique?.remainingUncertainty;
   const riskScore = clamp01(requiredFailures.length * 0.35 + notRun.length * 0.15 + blockingIssues * 0.3 + approvalsRejected * 0.3);
   const totalCriteria = Math.max(verification.length, 1);
   const unresolved = input.status === "completed" ? requiredFailures.length + notRun.length : totalCriteria;
-  const uncertaintyScore = clamp01(unresolved / totalCriteria);
-  const evidenceQuality = clamp01(evidenceScore - riskScore * 0.5 - uncertaintyScore * 0.3);
+  const uncertaintyScore = remainingUncertainty ?? clamp01(unresolved / totalCriteria);
+  const evidenceQuality = modelEvidenceQuality ?? clamp01(evidenceScore - riskScore * 0.5 - uncertaintyScore * 0.3);
   const recommendation =
     input.status !== "completed" || blockingIssues > 0
       ? "revise"
@@ -119,9 +155,9 @@ function scoreLedger(input: RunEntropyInput, signalIds: string[]): Parameters<Ma
     uncertaintyScore,
     evidenceScore,
     riskScore,
-    informationGainScore: clamp01(evidenceScore - riskScore * 0.2),
+    informationGainScore: informationGain(input.critique?.entropyDelta, evidenceScore, riskScore),
     evidenceQuality,
-    nextBestObservation: nextBestObservation(input, deterministicGates),
+    nextBestObservation: input.critique?.nextBestObservation || nextBestObservation(input, deterministicGates),
     recommendation,
     deterministicGates,
     payload: {
@@ -178,6 +214,13 @@ function nextBestObservation(input: RunEntropyInput, gates: string[]): string {
   return "等待用户反馈或后续相似任务验证经验是否可复用。";
 }
 
+function informationGain(delta: CritiqueResult["entropyDelta"], evidenceScore: number, riskScore: number): number {
+  if (delta === "decreased") return clamp01(0.7 + evidenceScore * 0.2 - riskScore * 0.2);
+  if (delta === "increased") return clamp01(0.2 - riskScore * 0.1);
+  if (delta === "unchanged") return clamp01(0.15 + evidenceScore * 0.1 - riskScore * 0.1);
+  return clamp01(evidenceScore - riskScore * 0.2);
+}
+
 function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -185,4 +228,8 @@ function hashText(text: string): string {
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }

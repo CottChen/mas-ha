@@ -4,6 +4,8 @@ import type { ApprovalMode, BoundarySnapshot, ConversationTurn, CritiqueResult, 
 import { createPiSession } from "../pi/pi-sdk.js";
 import { buildAuditPacket, createBoundarySnapshot, enforceAuditGate } from "./audit.js";
 import { AutonomyLoop } from "./autonomy.js";
+import { ContextPerturbationController } from "./context-perturbation.js";
+import { renderMemoryArtifacts, retrieveMemoryArtifacts } from "./memory.js";
 import { ORCHESTRATION_MODES } from "./orchestration.js";
 import {
   buildAcceptanceContract,
@@ -22,12 +24,14 @@ export class MasRunner {
   constructor(
     private readonly store = new MasStore(),
     private readonly autonomy = new AutonomyLoop(store),
+    private readonly perturbations = new ContextPerturbationController(store),
   ) {}
 
   async run(prompt: string, options: MasRunOptions, sink: StreamSink, sessionId?: string): Promise<{ runId: string; result: string }> {
     const runId = randomUUID();
     const mode = ORCHESTRATION_MODES[options.orchestrationMode];
-    const task = buildTaskWithConversation(prompt, options.conversationHistory, options.conversationSummary, options.availableSkills);
+    const memoryContext = renderMemoryArtifacts(retrieveMemoryArtifacts(this.store, { query: prompt, limit: 5 }));
+    const task = buildTaskWithConversation(prompt, options.conversationHistory, options.conversationSummary, options.availableSkills, memoryContext);
     this.store.createRun({ runId, sessionId, cwd: options.cwd, prompt });
     this.store.addEvent({
       runId,
@@ -99,7 +103,17 @@ export class MasRunner {
         const abortEgo = () => void ego.abort();
         options.signal?.addEventListener("abort", abortEgo, { once: true });
         try {
-          const rawEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique));
+          const perturbation = this.perturbations.render(
+            this.perturbations.createCandidate({
+              runId,
+              goalId: options.goalId,
+              targetRole: "ego",
+              trigger: critique ? "superego_revise" : "execution_plan",
+              critique,
+              sourceRefs: critique ? [`run:${runId}:critique`] : [`run:${runId}:contract`],
+            }),
+          );
+          const rawEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique, perturbation));
           egoResult = await this.parseEgoWithRepair(rawEgoOutput, ego, prompt, task, critique, runId, iteration);
           finalEgoOutput = egoResult.final_response;
           this.store.addAgentRun({
@@ -168,7 +182,18 @@ export class MasRunner {
         try {
           const auditPacket = buildAuditPacket(this.store, { runId, cwd: options.cwd, egoResult, boundarySnapshot, task, contract });
           this.store.audit({ runId, actor: "superego", action: "audit_packet_built", payload: auditPacket });
-          reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2), auditPacket));
+          const latestLedger = options.goalId ? this.store.listEntropyLedgers({ goalId: options.goalId, limit: 1 })[0] : undefined;
+          const perturbation = this.perturbations.render(
+            this.perturbations.createCandidate({
+              runId,
+              goalId: options.goalId,
+              targetRole: "superego",
+              trigger: latestLedger ? "ledger_review_sampling" : "review_sampling",
+              ledger: latestLedger,
+              sourceRefs: [`run:${runId}:audit_packet`],
+            }),
+          );
+          reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2), auditPacket, perturbation));
           critique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration);
           critique = enforceAuditGate(critique, auditPacket);
           this.store.addAgentRun({
@@ -522,11 +547,13 @@ function buildTaskWithConversation(
   history?: ConversationTurn[],
   summary?: string,
   availableSkills?: Array<{ name: string; description: string }>,
+  memoryContext?: string,
 ): string {
   const recentHistory = trimHistory(history ?? []);
   const hasSummary = Boolean(summary?.trim());
   const hasSkills = Boolean(availableSkills?.length);
-  if (recentHistory.length === 0 && !hasSummary && !hasSkills) return prompt;
+  const hasMemory = Boolean(memoryContext?.trim());
+  if (recentHistory.length === 0 && !hasSummary && !hasSkills && !hasMemory) return prompt;
   const parts = [
     "以下是同一 AionUI 会话的历史对话。回答和执行当前请求时必须结合历史，不要把用户的后续补充当成孤立任务。",
     "",
@@ -544,6 +571,9 @@ function buildTaskWithConversation(
       "如任务匹配某个技能，应按技能名主动加载或使用对应说明；不要声称没有检查过技能。",
       "",
     );
+  }
+  if (hasMemory) {
+    parts.push(memoryContext!.trim(), "");
   }
   parts.push(`当前用户请求：${prompt}`);
   return parts.join("\n");

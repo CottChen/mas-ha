@@ -154,6 +154,16 @@ export function startAcpServer(options: AcpServerOptions): void {
       };
     }
 
+    const cancelledGoalJobs = store.cancelGoalContinuationJobsForCwd({ cwd: session.cwd, reason: "user_prompt_preempts_goal_continuation" });
+    if (cancelledGoalJobs > 0) {
+      store.audit({
+        runId: "system",
+        actor: "ha",
+        action: "goal_continuation_preempted",
+        payload: { sessionId, cwd: session.cwd, cancelledGoalJobs },
+      });
+    }
+
     const activeGoal = store.listGoals({ cwd: session.cwd, statuses: ["active"], limit: 1 })[0];
     const result = await runner.run(
       prompt,

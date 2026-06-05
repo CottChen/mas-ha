@@ -6,10 +6,16 @@ import type {
   AutonomyJob,
   AutonomyJobInput,
   AutonomyJobStatus,
+  AutonomyJobUpdate,
+  AgentRunRecord,
+  AuditLogEntry,
+  ContextPerturbation,
   ConversationContext,
   ConversationTurn,
   EntropyLedger,
   EntropyLedgerInput,
+  EvalCandidate,
+  EvalCandidateInput,
   ExperienceEdgeType,
   ExperienceNodeInput,
   GoalInput,
@@ -305,6 +311,23 @@ export class MasStore {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_context_perturbations_run ON context_perturbations (run_id, status);
+      CREATE TABLE IF NOT EXISTS eval_candidates (
+        candidate_id TEXT PRIMARY KEY,
+        source_run_id TEXT NOT NULL,
+        goal_id TEXT,
+        title TEXT NOT NULL,
+        failure_mode TEXT NOT NULL,
+        input_fixture_json TEXT NOT NULL,
+        expected_assertions_json TEXT NOT NULL,
+        validator_command TEXT,
+        regression_scope TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_eval_candidates_source_run ON eval_candidates (source_run_id, status);
+      CREATE INDEX IF NOT EXISTS idx_eval_candidates_goal ON eval_candidates (goal_id, status);
       CREATE TABLE IF NOT EXISTS scheduler_leases (
         name TEXT PRIMARY KEY,
         owner_id TEXT NOT NULL,
@@ -361,6 +384,39 @@ export class MasStore {
       );
   }
 
+  listAgentRuns(runId: string): AgentRunRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, run_id, role, iteration, status, input_json, output_json, created_at, updated_at
+         FROM agent_runs
+         WHERE run_id = ?
+         ORDER BY id ASC`,
+      )
+      .all(runId) as Array<{
+      id: number;
+      run_id: string;
+      role: RoleName;
+      iteration: number;
+      status: string;
+      input_json: string;
+      output_json: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      role: row.role,
+      iteration: row.iteration,
+      status: row.status,
+      input: parseJson(row.input_json),
+      output: parseJson(row.output_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+
   addApproval(input: { runId: string; toolCallId: string; toolName: string; decision: string; rawInput?: unknown }): void {
     this.db
       .prepare(
@@ -412,6 +468,29 @@ export class MasStore {
         input.payload === undefined ? null : JSON.stringify(input.payload),
         new Date().toISOString(),
       );
+  }
+
+  listAuditLog(runId: string, limit = 200): AuditLogEntry[] {
+    const rows = this.db
+      .prepare("SELECT id, run_id, actor, action, target, payload_json, created_at FROM audit_log WHERE run_id = ? ORDER BY id ASC LIMIT ?")
+      .all(runId, limit) as Array<{
+      id: number;
+      run_id: string;
+      actor: string;
+      action: string;
+      target: string | null;
+      payload_json: string | null;
+      created_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      actor: row.actor,
+      action: row.action,
+      target: row.target ?? undefined,
+      payload: parseJson(row.payload_json),
+      createdAt: row.created_at,
+    }));
   }
 
   addEvent(input: MasEventInput): MasEvent {
@@ -528,6 +607,60 @@ export class MasStore {
     return nodeId;
   }
 
+  listExperienceNodes(input: { type?: ExperienceNodeInput["type"]; runId?: string; query?: string; limit?: number } = {}): Array<{
+    nodeId: string;
+    type: string;
+    runId?: string;
+    status: string;
+    title: string;
+    summary: string;
+    payload?: unknown;
+    createdAt: string;
+    updatedAt: string;
+  }> {
+    const limit = input.limit ?? 20;
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (input.type) {
+      clauses.push("type = ?");
+      params.push(input.type);
+    }
+    if (input.runId) {
+      clauses.push("run_id = ?");
+      params.push(input.runId);
+    }
+    if (input.query) {
+      clauses.push("(title LIKE ? OR summary LIKE ?)");
+      params.push(`%${input.query}%`, `%${input.query}%`);
+    }
+    let sql = "SELECT node_id, type, run_id, status, title, summary, payload_json, created_at, updated_at FROM experience_nodes";
+    if (clauses.length > 0) sql += ` WHERE ${clauses.join(" AND ")}`;
+    sql += " ORDER BY updated_at DESC LIMIT ?";
+    params.push(limit);
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      node_id: string;
+      type: string;
+      run_id: string | null;
+      status: string;
+      title: string;
+      summary: string;
+      payload_json: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      nodeId: row.node_id,
+      type: row.type,
+      runId: row.run_id ?? undefined,
+      status: row.status,
+      title: row.title,
+      summary: row.summary,
+      payload: parseJson(row.payload_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   addExperienceEdge(input: {
     fromNodeId: string;
     toNodeId: string;
@@ -544,9 +677,45 @@ export class MasStore {
     return edgeId;
   }
 
+  decayExperienceEdges(input: { factor?: number; minWeight?: number; limit?: number } = {}): number {
+    const factor = input.factor ?? 0.95;
+    const minWeight = input.minWeight ?? 0.05;
+    const rows = this.db
+      .prepare("SELECT edge_id, weight FROM experience_edges WHERE weight > ? ORDER BY created_at ASC LIMIT ?")
+      .all(minWeight, input.limit ?? 100) as Array<{ edge_id: string; weight: number }>;
+    for (const row of rows) {
+      this.db.prepare("UPDATE experience_edges SET weight = ? WHERE edge_id = ?").run(Math.max(minWeight, row.weight * factor), row.edge_id);
+    }
+    return rows.length;
+  }
+
+  pruneLowValueExperienceNodes(input: { limit?: number } = {}): number {
+    const rows = this.db
+      .prepare(
+        `SELECT node_id
+         FROM experience_nodes
+         WHERE status IN ('cancelled', 'pruned', 'retired')
+           AND type IN ('reflection', 'dream', 'eval_candidate')
+         ORDER BY updated_at ASC
+         LIMIT ?`,
+      )
+      .all(input.limit ?? 50) as Array<{ node_id: string }>;
+    for (const row of rows) {
+      this.db.prepare("UPDATE experience_nodes SET status = 'pruned', updated_at = ? WHERE node_id = ?").run(new Date().toISOString(), row.node_id);
+    }
+    return rows.length;
+  }
+
   addReflectionTask(input: ReflectionTaskInput): string {
     const now = new Date().toISOString();
     const reflectionId = input.reflectionId ?? randomUUID();
+    if (input.parentReflectionId) {
+      const parent = this.getReflectionTask(input.parentReflectionId);
+      const childCount = this.db
+        .prepare("SELECT COUNT(*) AS count FROM reflection_tasks WHERE parent_reflection_id = ?")
+        .get(input.parentReflectionId) as { count: number } | undefined;
+      if (parent && (childCount?.count ?? 0) >= parent.maxChildren) return parent.reflectionId;
+    }
     this.db
       .prepare(
         `INSERT INTO reflection_tasks (
@@ -709,19 +878,38 @@ export class MasStore {
   }
 
   dreamPruneReflectionTasks(limit = 20): number {
+    const now = new Date().toISOString();
     const rows = this.db
       .prepare(
-        `SELECT reflection_id
+        `SELECT reflection_id, payload_json
          FROM reflection_tasks
          WHERE status = 'scheduled' AND (wakeups >= max_wakeups OR depth >= max_depth)
          ORDER BY trigger_at ASC
          LIMIT ?`,
       )
-      .all(limit) as Array<{ reflection_id: string }>;
-    for (const row of rows) {
-      this.updateReflectionTask(row.reflection_id, { status: "pruned", payload: { prunedBy: "dream", reason: "budget_exhausted" } });
+      .all(limit) as Array<{ reflection_id: string; payload_json: string | null }>;
+    const expiredRows = this.db
+      .prepare(
+        `SELECT reflection_id, payload_json
+         FROM reflection_tasks
+         WHERE status = 'scheduled'
+         ORDER BY trigger_at ASC
+         LIMIT ?`,
+      )
+      .all(limit) as Array<{ reflection_id: string; payload_json: string | null }>;
+    const selected = new Map(rows.map((row) => [row.reflection_id, row]));
+    for (const row of expiredRows) {
+      const payload = asRecord(parseJson(row.payload_json));
+      if (typeof payload.expiresAt === "string" && payload.expiresAt <= now) selected.set(row.reflection_id, row);
     }
-    return rows.length;
+    for (const row of [...selected.values()].slice(0, limit)) {
+      const payload = asRecord(parseJson(row.payload_json));
+      this.updateReflectionTask(row.reflection_id, {
+        status: "pruned",
+        payload: { ...payload, prunedBy: "dream", reason: typeof payload.expiresAt === "string" && payload.expiresAt <= now ? "expired" : "budget_exhausted" },
+      });
+    }
+    return selected.size;
   }
 
   addAutonomyJob(input: AutonomyJobInput): string {
@@ -793,6 +981,50 @@ export class MasStore {
     return claimed;
   }
 
+  listAutonomyJobs(input: { status?: AutonomyJobStatus; type?: AutonomyJob["type"]; goalId?: string; limit?: number } = {}): AutonomyJob[] {
+    const limit = input.limit ?? 20;
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (input.status) {
+      clauses.push("status = ?");
+      params.push(input.status);
+    }
+    if (input.type) {
+      clauses.push("type = ?");
+      params.push(input.type);
+    }
+    if (input.goalId) {
+      clauses.push("goal_id = ?");
+      params.push(input.goalId);
+    }
+    let sql =
+      `SELECT job_id, type, status, source_run_id, goal_id, trigger_at, owner_id, lease_until,
+        depth, wakeups, max_depth, max_children, max_wakeups, allow_nested, payload_json, created_at, updated_at
+       FROM autonomy_jobs`;
+    if (clauses.length > 0) sql += ` WHERE ${clauses.join(" AND ")}`;
+    sql += " ORDER BY trigger_at ASC LIMIT ?";
+    params.push(limit);
+    return (this.db.prepare(sql).all(...params) as AutonomyJobRow[]).map(toAutonomyJob);
+  }
+
+  cancelGoalContinuationJobsForCwd(input: { cwd: string; reason: string }): number {
+    const goals = this.listGoals({ cwd: input.cwd, statuses: ["active", "paused", "blocked"], limit: 100 });
+    let count = 0;
+    for (const goal of goals) {
+      const jobs = this.listAutonomyJobs({ type: "goal_continuation", goalId: goal.goalId, limit: 20 }).filter(
+        (job) => job.status === "scheduled" || job.status === "running",
+      );
+      for (const job of jobs) {
+        this.updateAutonomyJob(job.jobId, {
+          status: "cancelled",
+          payload: { ...asRecord(job.payload), cancelledBy: "user_message", reason: input.reason },
+        });
+        count++;
+      }
+    }
+    return count;
+  }
+
   getAutonomyJob(jobId: string): AutonomyJob | undefined {
     const row = this.db
       .prepare(
@@ -804,18 +1036,31 @@ export class MasStore {
     return row ? toAutonomyJob(row) : undefined;
   }
 
-  updateAutonomyJob(jobId: string, input: { status: AutonomyJobStatus; payload?: unknown; triggerAt?: string }): void {
-    const current = this.db.prepare("SELECT payload_json FROM autonomy_jobs WHERE job_id = ?").get(jobId) as
-      | { payload_json: string | null }
+  updateAutonomyJob(jobId: string, input: AutonomyJobUpdate): void {
+    const current = this.db.prepare("SELECT wakeups, payload_json FROM autonomy_jobs WHERE job_id = ?").get(jobId) as
+      | { wakeups: number; payload_json: string | null }
       | undefined;
     if (!current) return;
     this.db
       .prepare(
         `UPDATE autonomy_jobs
-         SET status = ?, trigger_at = COALESCE(?, trigger_at), owner_id = NULL, lease_until = NULL, payload_json = ?, updated_at = ?
+         SET status = ?,
+             trigger_at = COALESCE(?, trigger_at),
+             wakeups = ?,
+             owner_id = NULL,
+             lease_until = NULL,
+             payload_json = ?,
+             updated_at = ?
          WHERE job_id = ?`,
       )
-      .run(input.status, input.triggerAt ?? null, stringifyJson(input.payload ?? parseJson(current.payload_json)), new Date().toISOString(), jobId);
+      .run(
+        input.status,
+        input.triggerAt ?? null,
+        current.wakeups + (input.incrementWakeups ? 1 : 0),
+        stringifyJson(input.payload ?? parseJson(current.payload_json)),
+        new Date().toISOString(),
+        jobId,
+      );
   }
 
   createGoal(input: GoalInput): GoalRecord {
@@ -946,6 +1191,39 @@ export class MasStore {
     return this.getGoal(input.goalId);
   }
 
+  claimDueGoals(input: { ownerId: string; now?: string; limit?: number; leaseMs?: number }): GoalRecord[] {
+    const now = input.now ?? new Date().toISOString();
+    const leaseUntil = new Date(Date.parse(now) + (input.leaseMs ?? 5 * 60_000)).toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT goal_id
+         FROM goal_tasks
+         WHERE status = 'active'
+           AND (next_wake_at IS NULL OR next_wake_at <= ?)
+           AND (lease_until IS NULL OR lease_until <= ?)
+         ORDER BY COALESCE(next_wake_at, created_at) ASC
+         LIMIT ?`,
+      )
+      .all(now, now, input.limit ?? 20) as Array<{ goal_id: string }>;
+    const claimed: GoalRecord[] = [];
+    for (const row of rows) {
+      const result = this.db
+        .prepare(
+          `UPDATE goal_tasks
+           SET owner_id = ?, lease_until = ?, updated_at = ?
+           WHERE goal_id = ?
+             AND status = 'active'
+             AND (next_wake_at IS NULL OR next_wake_at <= ?)
+             AND (lease_until IS NULL OR lease_until <= ?)`,
+        )
+        .run(input.ownerId, leaseUntil, now, row.goal_id, now, now) as { changes?: number };
+      if ((result.changes ?? 0) !== 1) continue;
+      const goal = this.getGoal(row.goal_id);
+      if (goal) claimed.push(goal);
+    }
+    return claimed;
+  }
+
   addGoalRun(input: {
     goalRunId?: string;
     goalId: string;
@@ -982,6 +1260,40 @@ export class MasStore {
         now,
       );
     return goalRunId;
+  }
+
+  updateGoalRun(
+    goalRunId: string,
+    input: { status: GoalRunStatus; masRunId?: string; endedAt?: string; judgeResult?: unknown; payload?: unknown },
+  ): GoalRunRecord | undefined {
+    this.db
+      .prepare(
+        `UPDATE goal_runs
+         SET status = ?,
+             mas_run_id = COALESCE(?, mas_run_id),
+             ended_at = COALESCE(?, ended_at),
+             judge_result_json = COALESCE(?, judge_result_json),
+             payload_json = COALESCE(?, payload_json),
+             updated_at = ?
+         WHERE goal_run_id = ?`,
+      )
+      .run(
+        input.status,
+        input.masRunId ?? null,
+        input.endedAt ?? null,
+        input.judgeResult === undefined ? null : stringifyJson(input.judgeResult),
+        input.payload === undefined ? null : stringifyJson(input.payload),
+        new Date().toISOString(),
+        goalRunId,
+      );
+    const row = this.db
+      .prepare(
+        `SELECT goal_run_id, goal_id, mas_run_id, owner_id, status, trigger, judge_result_json,
+          payload_json, started_at, ended_at, created_at, updated_at
+         FROM goal_runs WHERE goal_run_id = ?`,
+      )
+      .get(goalRunId) as GoalRunRow | undefined;
+    return row ? toGoalRun(row) : undefined;
   }
 
   listGoalRuns(goalId: string, limit = 20): GoalRunRecord[] {
@@ -1153,6 +1465,110 @@ export class MasStore {
     sql += " ORDER BY created_at DESC LIMIT ?";
     params.push(limit);
     return (this.db.prepare(sql).all(...params) as EntropyLedgerRow[]).map(toEntropyLedger);
+  }
+
+  addContextPerturbation(input: Omit<ContextPerturbation, "perturbationId"> & { perturbationId?: string }): string {
+    const perturbationId = input.perturbationId ?? randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO context_perturbations (
+          perturbation_id, run_id, goal_id, kind, target_role, generated_by, trigger, injection_point,
+          type, context_patch_hash, source_refs_json, status, safety_gate_result, harmlessness,
+          target_attractor, expected_novelty, max_risk, applied_run_id, produced_signal_id,
+          summary, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        perturbationId,
+        input.runId ?? null,
+        input.goalId ?? null,
+        input.kind,
+        input.targetRole,
+        input.generatedBy,
+        input.trigger,
+        input.injectionPoint,
+        input.type,
+        input.contextPatchHash,
+        stringifyJson(input.sourceRefs) ?? "[]",
+        input.status,
+        input.safetyGateResult,
+        input.harmlessness,
+        input.targetAttractor,
+        input.expectedNovelty,
+        input.maxRisk,
+        input.appliedRunId ?? null,
+        input.producedSignalId ?? null,
+        input.summary,
+        stringifyJson(input.payload),
+        new Date().toISOString(),
+      );
+    return perturbationId;
+  }
+
+  addEvalCandidate(input: EvalCandidateInput): string {
+    const now = new Date().toISOString();
+    const candidateId = input.candidateId ?? randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO eval_candidates (
+          candidate_id, source_run_id, goal_id, title, failure_mode, input_fixture_json,
+          expected_assertions_json, validator_command, regression_scope, confidence, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(candidate_id) DO UPDATE SET
+          title = excluded.title,
+          failure_mode = excluded.failure_mode,
+          expected_assertions_json = excluded.expected_assertions_json,
+          confidence = excluded.confidence,
+          status = excluded.status,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        candidateId,
+        input.sourceRunId,
+        input.goalId ?? null,
+        input.title,
+        input.failureMode,
+        stringifyJson(input.inputFixture) ?? "null",
+        stringifyJson(input.expectedAssertions) ?? "[]",
+        input.validatorCommand ?? null,
+        input.regressionScope,
+        clamp01(input.confidence),
+        input.status ?? "candidate",
+        now,
+        now,
+      );
+    return candidateId;
+  }
+
+  listEvalCandidates(input: { sourceRunId?: string; goalId?: string; status?: EvalCandidate["status"]; limit?: number } = {}): EvalCandidate[] {
+    const limit = input.limit ?? 20;
+    const clauses: string[] = [];
+    const params: Array<string | number> = [];
+    if (input.sourceRunId) {
+      clauses.push("source_run_id = ?");
+      params.push(input.sourceRunId);
+    }
+    if (input.goalId) {
+      clauses.push("goal_id = ?");
+      params.push(input.goalId);
+    }
+    if (input.status) {
+      clauses.push("status = ?");
+      params.push(input.status);
+    }
+    let sql =
+      `SELECT candidate_id, source_run_id, goal_id, title, failure_mode, input_fixture_json,
+        expected_assertions_json, validator_command, regression_scope, confidence, status
+       FROM eval_candidates`;
+    if (clauses.length > 0) sql += ` WHERE ${clauses.join(" AND ")}`;
+    sql += " ORDER BY confidence DESC, candidate_id ASC LIMIT ?";
+    params.push(limit);
+    return (this.db.prepare(sql).all(...params) as EvalCandidateRow[]).map(toEvalCandidate);
+  }
+
+  updateEvalCandidateStatus(candidateId: string, status: EvalCandidate["status"]): EvalCandidate | undefined {
+    this.db.prepare("UPDATE eval_candidates SET status = ?, updated_at = ? WHERE candidate_id = ?").run(status, new Date().toISOString(), candidateId);
+    return this.listEvalCandidates({ limit: 100 }).find((candidate) => candidate.candidateId === candidateId);
   }
 
   getConversationHistory(sessionId: string, limit = 12): ConversationTurn[] {
@@ -1437,6 +1853,20 @@ type EntropyLedgerRow = {
   created_at: string;
 };
 
+type EvalCandidateRow = {
+  candidate_id: string;
+  source_run_id: string;
+  goal_id: string | null;
+  title: string;
+  failure_mode: string;
+  input_fixture_json: string;
+  expected_assertions_json: string;
+  validator_command: string | null;
+  regression_scope: EvalCandidate["regressionScope"];
+  confidence: number;
+  status: EvalCandidate["status"];
+};
+
 function toReflectionTask(row: ReflectionTaskRow): ReflectionTask {
   return {
     reflectionId: row.reflection_id,
@@ -1592,6 +2022,22 @@ function toEntropyLedger(row: EntropyLedgerRow): EntropyLedger {
   };
 }
 
+function toEvalCandidate(row: EvalCandidateRow): EvalCandidate {
+  return {
+    candidateId: row.candidate_id,
+    sourceRunId: row.source_run_id,
+    goalId: row.goal_id ?? undefined,
+    title: row.title,
+    failureMode: row.failure_mode,
+    inputFixture: parseJson(row.input_fixture_json),
+    expectedAssertions: parseStringArray(row.expected_assertions_json),
+    validatorCommand: row.validator_command ?? undefined,
+    regressionScope: row.regression_scope,
+    confidence: row.confidence,
+    status: row.status,
+  };
+}
+
 function normalizeAutonomyBudget(input?: Partial<AutonomyJob["budget"]>): AutonomyJob["budget"] {
   return {
     depth: input?.depth ?? 0,
@@ -1615,4 +2061,8 @@ function clamp01(value: number): number {
 function parseStringArray(value: string): string[] {
   const parsed = parseJson(value);
   return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }

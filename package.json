@@ -9,6 +9,7 @@
   "scripts": {
     "mas": "tsx src/cli.ts",
     "doctor": "tsx src/cli.ts doctor",
+    "e2e:smoke": "tsx scripts/e2e-smoke.mts",
     "smoke:audit": "tsx scripts/audit-smoke.mts",
     "typecheck": "tsc --noEmit"
   },

@@ -83,6 +83,10 @@ async function main(): Promise<void> {
       if (!result.ok) process.exitCode = 1;
       return;
     }
+    case "candidate": {
+      await candidate(args, flags);
+      return;
+    }
     case "doctor":
       await doctor();
       return;
@@ -207,6 +211,7 @@ function printHelp(): void {
   mas goal list [--status active,paused,blocked] [--cwd <dir>]
   mas subgoal add <criterion> [--goal-id <id>] [--cwd <dir>]
   mas subgoal list|confirm|reject|remove|clear [index|subgoal-id] [--goal-id <id>] [--cwd <dir>]
+  mas candidate list|promote|reject|retire [candidate-id] [--goal-id <id>] [--status candidate]
   mas status [--limit 20]
   mas reflect due|list|dream [--limit 20]
   mas autonomy daemon|tick|status [--interval 60000] [--limit 20]
@@ -264,6 +269,10 @@ async function autonomy(args: string[], flags: Map<string, string | boolean>): P
           lease: store.getSchedulerLease("global-autonomy-scheduler"),
           scheduled: store.listReflectionTasks("scheduled", limit),
           running: store.listReflectionTasks("running", limit),
+          autonomyJobs: {
+            scheduled: store.listAutonomyJobs({ status: "scheduled", limit }),
+            running: store.listAutonomyJobs({ status: "running", limit }),
+          },
         },
         null,
         2,
@@ -295,6 +304,27 @@ async function autonomy(args: string[], flags: Map<string, string | boolean>): P
   throw new Error(`未知 autonomy 子命令：${subcommand}`);
 }
 
+async function candidate(args: string[], flags: Map<string, string | boolean>): Promise<void> {
+  const [subcommand = "list", id] = positional(args);
+  const store = new MasStore();
+  if (subcommand === "list") {
+    const rows = store.listEvalCandidates({
+      goalId: typeof flags.get("goal-id") === "string" ? String(flags.get("goal-id")) : undefined,
+      status: normalizeCandidateStatus(flags.get("status")),
+      limit: Number(flags.get("limit") ?? 20),
+    });
+    console.log(JSON.stringify(rows, null, 2));
+    return;
+  }
+  const nextStatus =
+    subcommand === "promote" ? "promoted" : subcommand === "reject" ? "rejected" : subcommand === "retire" ? "retired" : undefined;
+  if (!nextStatus || !id) throw new Error("用法：mas candidate list|promote|reject|retire [candidate-id]");
+  const updated = store.updateEvalCandidateStatus(id, nextStatus);
+  if (!updated) throw new Error(`未知 candidate：${id}`);
+  store.audit({ runId: updated.sourceRunId, actor: "ha", action: `eval_candidate_${nextStatus}`, target: id, payload: updated });
+  console.log(JSON.stringify(updated, null, 2));
+}
+
 function normalizeCommand(command: string | undefined, args: string[]): [string | undefined, string[]] {
   if (command === "--experimental-acp") return ["acp", args];
   return [command, args];
@@ -306,6 +336,11 @@ function normalizeApprovalModePolicy(value: string | boolean | undefined): Appro
 
 function normalizeReflectionStatus(value: string | boolean | undefined): ReflectionStatus | undefined {
   if (value === "scheduled" || value === "running" || value === "completed" || value === "cancelled" || value === "pruned") return value;
+  return undefined;
+}
+
+function normalizeCandidateStatus(value: string | boolean | undefined): "candidate" | "promoted" | "rejected" | "retired" | undefined {
+  if (value === "candidate" || value === "promoted" || value === "rejected" || value === "retired") return value;
   return undefined;
 }
 

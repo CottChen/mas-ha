@@ -26,7 +26,8 @@ export type ExperienceEdgeType =
   | "reflected_on"
   | "dream_pruned"
   | "observed"
-  | "controls";
+  | "controls"
+  | "derived_candidate";
 export type ReflectionStatus = "scheduled" | "running" | "completed" | "cancelled" | "pruned";
 export type AutonomyJobType = "reflection" | "dream" | "prune" | "consolidation" | "goal_continuation";
 export type AutonomyJobStatus = "scheduled" | "running" | "completed" | "cancelled" | "blocked" | "pruned";
@@ -109,6 +110,18 @@ export interface ReflectionTask extends Required<Omit<ReflectionTaskInput, "sour
   updatedAt: string;
 }
 
+export interface ReflectionIntent {
+  purpose: string;
+  triggerAt: string;
+  entropyReason: string;
+  expectedSignal: string;
+  noNewSignalAction: "cancel" | "complete" | "reschedule" | "abstract";
+  informationGainScore: number;
+  maxDepth: number;
+  maxWakeups: number;
+  expiresAt: string;
+}
+
 export interface AutonomyBudget {
   depth: number;
   maxDepth: number;
@@ -127,6 +140,13 @@ export interface AutonomyJobInput {
   triggerAt: string;
   budget?: Partial<AutonomyBudget>;
   payload?: unknown;
+}
+
+export interface AutonomyJobUpdate {
+  status: AutonomyJobStatus;
+  payload?: unknown;
+  triggerAt?: string;
+  incrementWakeups?: boolean;
 }
 
 export interface AutonomyJob {
@@ -381,6 +401,42 @@ export interface EvalCandidate {
   status: "candidate" | "promoted" | "rejected" | "retired";
 }
 
+export interface EvalCandidateInput {
+  candidateId?: string;
+  sourceRunId: string;
+  goalId?: string;
+  title: string;
+  failureMode: string;
+  inputFixture: unknown;
+  expectedAssertions: string[];
+  validatorCommand?: string;
+  regressionScope: "unit" | "integration" | "e2e" | "policy" | "manual";
+  confidence: number;
+  status?: EvalCandidate["status"];
+}
+
+export interface AgentRunRecord {
+  id: number;
+  runId: string;
+  role: RoleName;
+  iteration: number;
+  status: string;
+  input?: unknown;
+  output?: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AuditLogEntry {
+  id: number;
+  runId: string;
+  actor: string;
+  action: string;
+  target?: string;
+  payload?: unknown;
+  createdAt: string;
+}
+
 export interface MemoryArtifact {
   kind: "lesson" | "risk" | "pattern" | "rule_candidate" | "test_candidate" | "doc_candidate" | "hypothesis";
   scope: "task" | "project" | "global";
@@ -388,6 +444,22 @@ export interface MemoryArtifact {
   confidence: number;
   sourceNodeIds: string[];
   activationHints: string[];
+}
+
+export interface DreamGraphPatch {
+  patchId: string;
+  operation: "decay_edge" | "merge_nodes" | "abstract_pattern" | "prune_node" | "create_perturbation_seed";
+  targetNodeIds: string[];
+  targetEdgeIds: string[];
+  summary: string;
+  rationale: string;
+  confidence: number;
+  safety: {
+    graphOnly: true;
+    touchesUserWorkspace: false;
+    createsNestedReflection: false;
+  };
+  payload?: unknown;
 }
 
 export interface AutonomyJobResult {
@@ -447,6 +519,11 @@ export interface CritiqueResult {
   quality_score: number;
   summary: string;
   next_action: "accept" | "revise" | "escalate";
+  entropyDelta?: "increased" | "decreased" | "unchanged" | "unknown";
+  evidenceQuality?: number;
+  remainingUncertainty?: number;
+  nextBestObservation?: string;
+  reflectionIntent?: ReflectionIntent;
   critique_items: Array<{
     category: string;
     severity: "low" | "medium" | "high";
@@ -543,6 +620,15 @@ export interface AuditPacket {
   commands: Array<{
     toolCallId: string;
     command: unknown;
+  }>;
+  commandSideEffects: Array<{
+    toolCallId: string;
+    command: string;
+    kind: "redirect" | "copy" | "move" | "mkdir" | "delete" | "unknown_write";
+    path: string;
+    inOutputDir: boolean;
+    inCwd: boolean;
+    inReadOnlyInput: boolean;
   }>;
   egoChangedFiles: string[];
   unreportedWrites: string[];

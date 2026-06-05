@@ -1,5 +1,6 @@
 import { MasStore } from "../storage.js";
 import type { ApprovalMode, GoalAcceptanceContract, GoalRecord, GoalStatus, OrchestrationMode } from "../types.js";
+import { GoalController } from "./goal-controller.js";
 
 export interface GoalCommandContext {
   cwd: string;
@@ -17,7 +18,11 @@ export interface GoalCommandResult {
 }
 
 export class GoalCommandRouter {
-  constructor(private readonly store = new MasStore()) {}
+  private readonly controller: GoalController;
+
+  constructor(private readonly store = new MasStore()) {
+    this.controller = new GoalController(store);
+  }
 
   handleGoal(args: string[], context: GoalCommandContext): GoalCommandResult {
     const [rawSubcommand, ...rest] = args;
@@ -78,7 +83,9 @@ export class GoalCommandRouter {
       summary: goal.objective,
       payload: { goal },
     });
+    const jobId = this.controller.scheduleContinuation(goal, goal.nextWakeAt ?? new Date().toISOString(), "goal_created");
     this.auditGoal(goal, "goal_created", { nodeId });
+    this.auditGoal(goal, "goal_continuation_scheduled", { jobId });
     return { ok: true, text: formatGoal(goal, "已创建 Goal"), data: goal };
   }
 
@@ -119,6 +126,10 @@ export class GoalCommandRouter {
     if (!goal) return { ok: false, text: `没有可${label}的 Goal。` };
     const updated = this.store.updateGoal({ goalId: goal.goalId, status, nextWakeAt: status === "active" ? new Date().toISOString() : null });
     if (!updated) return { ok: false, text: `Goal ${label}失败：${goal.goalId}` };
+    if (status === "active") {
+      const jobId = this.controller.scheduleContinuation(updated, updated.nextWakeAt ?? new Date().toISOString(), "goal_resumed");
+      this.auditGoal(updated, "goal_continuation_scheduled", { jobId });
+    }
     this.auditGoal(updated, `goal_${status}`, { previousStatus: goal.status });
     return { ok: true, text: formatGoal(updated, `已${label} Goal`), data: updated };
   }

@@ -44,7 +44,7 @@ export class ReflectionScheduler {
     this.timer = undefined;
   }
 
-  tick(): { leaseAcquired: boolean; due?: ReturnType<AutonomyLoop["runDueReflections"]>; dream?: ReturnType<AutonomyLoop["dreamPrune"]> } {
+  tick(): { leaseAcquired: boolean; due?: ReturnType<AutonomyLoop["runDueAutonomyJobs"]>; dream?: ReturnType<AutonomyLoop["dreamPrune"]> } {
     if (this.running) return { leaseAcquired: false };
     this.running = true;
     try {
@@ -55,7 +55,7 @@ export class ReflectionScheduler {
         metadata: { pid: process.pid, intervalMs: this.options.intervalMs },
       });
       if (!leaseAcquired) return { leaseAcquired: false };
-      const due = this.autonomy.runDueReflections(this.options.dueLimit);
+      const due = this.autonomy.runDueAutonomyJobs(this.options.dueLimit);
       const dream = this.options.runDream ? this.autonomy.dreamPrune(this.options.dreamLimit) : { pruned: 0 };
       if (due.processed > 0 || dream.pruned > 0) {
         this.store.audit({

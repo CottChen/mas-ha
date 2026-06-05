@@ -3,7 +3,10 @@ import { basename, isAbsolute, normalize, resolve } from "node:path";
 import { MasStore } from "../storage.js";
 import type { AuditFinding, AuditPacket, BoundaryDiff, BoundaryFileMetadata, BoundaryScopeKind, BoundarySnapshot, BoundarySnapshotScope, EgoResult } from "../types.js";
 
-const MAX_SNAPSHOT_ENTRIES_PER_SCOPE = 2000;
+const DEFAULT_MAX_SNAPSHOT_ENTRIES_PER_SCOPE = 2000;
+const DEFAULT_OUTPUT_DEPTH = 4;
+const DEFAULT_READONLY_DEPTH = 4;
+const DEFAULT_WORKSPACE_DEPTH = 1;
 
 export function buildAuditPacket(
   store: MasStore,
@@ -28,6 +31,16 @@ export function buildAuditPacket(
   const commands = approvals
     .map((approval) => ({ toolCallId: approval.toolCallId, command: extractCommand(approval.rawInput) }))
     .filter((item): item is { toolCallId: string; command: unknown } => item.command !== undefined);
+  const commandSideEffects = commands.flatMap((item) =>
+    extractCommandSideEffects(item.command, input.cwd).map((effect) => ({
+      toolCallId: item.toolCallId,
+      command: String(item.command),
+      ...effect,
+      inOutputDir: isSubPath(effect.path, outputDir),
+      inCwd: isSubPath(effect.path, cwd),
+      inReadOnlyInput: isReadOnlyInputPath(effect.path),
+    })),
+  );
   const egoChangedFiles = input.egoResult.changed_files.map((path) => normalizeTaskPath(path, input.cwd));
   const unreportedWrites = writes.map((write) => write.path).filter((path) => !egoChangedFiles.some((changed) => samePath(changed, path)));
   const writesOutsideOutput = writes.filter((write) => !write.inOutputDir).map((write) => write.path);
@@ -44,6 +57,7 @@ export function buildAuditPacket(
     writesToReadOnlyInputs,
     currentWritesToReadOnlyInputs,
     boundaryDiff,
+    commandSideEffects,
   });
 
   return {
@@ -61,6 +75,7 @@ export function buildAuditPacket(
     approvals,
     writes,
     commands,
+    commandSideEffects,
     egoChangedFiles,
     unreportedWrites: unique(unreportedWrites),
     writesOutsideOutput: unique(writesOutsideOutput),
@@ -99,6 +114,7 @@ function buildFindings(input: {
   writesToReadOnlyInputs: string[];
   currentWritesToReadOnlyInputs: string[];
   boundaryDiff?: BoundaryDiff;
+  commandSideEffects: AuditPacket["commandSideEffects"];
 }): AuditFinding[] {
   const findings: AuditFinding[] = [];
   if (input.unreportedWrites.length > 0) {
@@ -167,12 +183,29 @@ function buildFindings(input: {
       });
     }
   }
+  const riskyCommandWrites = input.commandSideEffects.filter((effect) => !effect.inOutputDir || effect.inReadOnlyInput);
+  if (riskyCommandWrites.length > 0) {
+    findings.push({
+      category: "command_side_effect",
+      severity: riskyCommandWrites.some((effect) => effect.inReadOnlyInput) ? "high" : "medium",
+      message: "命令文本解析发现潜在写入、复制、移动、删除或重定向副作用；Superego 必须结合当前文件状态复核。",
+      evidence: unique(riskyCommandWrites.map((effect) => `${effect.kind}:${effect.path}`)),
+    });
+  }
   return findings;
 }
 
-export function createBoundarySnapshot(input: { cwd: string; task: string; contract: string }): BoundarySnapshot {
+export function createBoundarySnapshot(input: {
+  cwd: string;
+  task: string;
+  contract: string;
+  maxEntriesPerScope?: number;
+  workspaceDepth?: number;
+  outputDepth?: number;
+  readonlyDepth?: number;
+}): BoundarySnapshot {
   const cwd = normalizePath(input.cwd);
-  const scopes = discoverBoundaryScopes(input).map((scope) => snapshotScope(scope));
+  const scopes = discoverBoundaryScopes(input).map((scope) => snapshotScope(scope, input.maxEntriesPerScope ?? DEFAULT_MAX_SNAPSHOT_ENTRIES_PER_SCOPE));
   return {
     createdAt: new Date().toISOString(),
     cwd,
@@ -180,30 +213,37 @@ export function createBoundarySnapshot(input: { cwd: string; task: string; contr
   };
 }
 
-function discoverBoundaryScopes(input: { cwd: string; task: string; contract: string }): Array<{ kind: BoundaryScopeKind; path: string; depth: number }> {
+function discoverBoundaryScopes(input: {
+  cwd: string;
+  task: string;
+  contract: string;
+  workspaceDepth?: number;
+  outputDepth?: number;
+  readonlyDepth?: number;
+}): Array<{ kind: BoundaryScopeKind; path: string; depth: number }> {
   const cwd = normalizePath(input.cwd);
   const scopes: Array<{ kind: BoundaryScopeKind; path: string; depth: number }> = [
-    { kind: "workspace_root", path: cwd, depth: 1 },
-    { kind: "output", path: normalizePath(resolve(input.cwd, "output")), depth: 4 },
+    { kind: "workspace_root", path: cwd, depth: input.workspaceDepth ?? DEFAULT_WORKSPACE_DEPTH },
+    { kind: "output", path: normalizePath(resolve(input.cwd, "output")), depth: input.outputDepth ?? DEFAULT_OUTPUT_DEPTH },
   ];
   for (const candidate of [resolve(input.cwd, "data"), resolve(input.cwd, "template"), ...extractAbsolutePaths(`${input.task}\n${input.contract}`)]) {
     const normalized = normalizePath(candidate);
     const name = basename(normalized);
     if ((name === "data" || name === "template" || normalized.includes("/data/") || normalized.includes("/template/")) && !scopes.some((scope) => samePath(scope.path, normalized))) {
-      scopes.push({ kind: "readonly_input", path: normalized, depth: 4 });
+      scopes.push({ kind: "readonly_input", path: normalized, depth: input.readonlyDepth ?? DEFAULT_READONLY_DEPTH });
     }
   }
   return scopes;
 }
 
-function snapshotScope(scope: { kind: BoundaryScopeKind; path: string; depth: number }): BoundarySnapshotScope {
+function snapshotScope(scope: { kind: BoundaryScopeKind; path: string; depth: number }, maxEntries: number): BoundarySnapshotScope {
   const entries: BoundaryFileMetadata[] = [];
   let truncated = false;
   if (!existsSync(scope.path)) {
     return { ...scope, exists: false, fileCount: 0, dirCount: 0, truncated: false, entries };
   }
   const visit = (path: string, depth: number) => {
-    if (entries.length >= MAX_SNAPSHOT_ENTRIES_PER_SCOPE) {
+    if (entries.length >= maxEntries) {
       truncated = true;
       return;
     }
@@ -338,6 +378,38 @@ function extractWritePaths(rawInput: unknown): string[] {
 function extractCommand(rawInput: unknown): unknown {
   if (!rawInput || typeof rawInput !== "object") return undefined;
   return (rawInput as Record<string, unknown>).command;
+}
+
+function extractCommandSideEffects(
+  command: unknown,
+  cwd: string,
+): Array<{ kind: AuditPacket["commandSideEffects"][number]["kind"]; path: string }> {
+  if (typeof command !== "string") return [];
+  const effects: Array<{ kind: AuditPacket["commandSideEffects"][number]["kind"]; path: string }> = [];
+  const text = command.replace(/\s+/g, " ");
+  for (const match of text.matchAll(/(?:^|\s)(?:>|>>|1>|2>|&>)\s*("[^"]+"|'[^']+'|[^\s;&|]+)/g)) {
+    effects.push({ kind: "redirect", path: normalizeTaskPath(stripQuotes(match[1] ?? ""), cwd) });
+  }
+  for (const match of text.matchAll(/(?:^|\s)(?:cp|copy)\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s+("[^"]+"|'[^']+'|[^\s;&|]+)/gi)) {
+    effects.push({ kind: "copy", path: normalizeTaskPath(stripQuotes(match[2] ?? ""), cwd) });
+  }
+  for (const match of text.matchAll(/(?:^|\s)(?:mv|move|ren|rename)\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s+("[^"]+"|'[^']+'|[^\s;&|]+)/gi)) {
+    effects.push({ kind: "move", path: normalizeTaskPath(stripQuotes(match[2] ?? ""), cwd) });
+  }
+  for (const match of text.matchAll(/(?:^|\s)(?:mkdir|md)\s+(?:-p\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)/gi)) {
+    effects.push({ kind: "mkdir", path: normalizeTaskPath(stripQuotes(match[1] ?? ""), cwd) });
+  }
+  for (const match of text.matchAll(/(?:^|\s)(?:rm|del|erase|rmdir)\s+(?:-[a-zA-Z]+\s+)?("[^"]+"|'[^']+'|[^\s;&|]+)/gi)) {
+    effects.push({ kind: "delete", path: normalizeTaskPath(stripQuotes(match[1] ?? ""), cwd) });
+  }
+  for (const match of text.matchAll(/(?:^|\s)(?:tee|set-content|out-file)\s+("[^"]+"|'[^']+'|[^\s;&|]+)/gi)) {
+    effects.push({ kind: "unknown_write", path: normalizeTaskPath(stripQuotes(match[1] ?? ""), cwd) });
+  }
+  return effects;
+}
+
+function stripQuotes(value: string): string {
+  return value.replace(/^['"]|['"]$/g, "");
 }
 
 function normalizeTaskPath(path: string, cwd: string): string {
