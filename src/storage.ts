@@ -661,6 +661,39 @@ export class MasStore {
     }));
   }
 
+  updateExperienceNode(
+    nodeId: string,
+    input: {
+      status?: string;
+      title?: string;
+      summary?: string;
+      payload?: unknown;
+    },
+  ): void {
+    const current = this.db.prepare("SELECT payload_json FROM experience_nodes WHERE node_id = ?").get(nodeId) as
+      | { payload_json: string | null }
+      | undefined;
+    if (!current) return;
+    this.db
+      .prepare(
+        `UPDATE experience_nodes
+         SET status = COALESCE(?, status),
+             title = COALESCE(?, title),
+             summary = COALESCE(?, summary),
+             payload_json = ?,
+             updated_at = ?
+         WHERE node_id = ?`,
+      )
+      .run(
+        input.status ?? null,
+        input.title ?? null,
+        input.summary ?? null,
+        stringifyJson(input.payload === undefined ? parseJson(current.payload_json) : { ...asRecord(parseJson(current.payload_json)), ...asRecord(input.payload) }),
+        new Date().toISOString(),
+        nodeId,
+      );
+  }
+
   addExperienceEdge(input: {
     fromNodeId: string;
     toNodeId: string;
@@ -948,20 +981,28 @@ export class MasStore {
     return jobId;
   }
 
-  claimDueAutonomyJobs(input: { ownerId: string; now?: string; limit?: number; leaseMs?: number }): AutonomyJob[] {
+  claimDueAutonomyJobs(input: { ownerId: string; now?: string; limit?: number; leaseMs?: number; sourceRunId?: string; jobId?: string }): AutonomyJob[] {
     const now = input.now ?? new Date().toISOString();
     const leaseUntil = new Date(Date.parse(now) + (input.leaseMs ?? 5 * 60_000)).toISOString();
+    const clauses = ["status = 'scheduled'", "trigger_at <= ?", "(lease_until IS NULL OR lease_until <= ?)"];
+    const params: Array<string | number> = [now, now];
+    if (input.sourceRunId) {
+      clauses.push("source_run_id = ?");
+      params.push(input.sourceRunId);
+    }
+    if (input.jobId) {
+      clauses.push("job_id = ?");
+      params.push(input.jobId);
+    }
     const rows = this.db
       .prepare(
         `SELECT job_id
          FROM autonomy_jobs
-         WHERE status = 'scheduled'
-           AND trigger_at <= ?
-           AND (lease_until IS NULL OR lease_until <= ?)
+         WHERE ${clauses.join(" AND ")}
          ORDER BY trigger_at ASC
          LIMIT ?`,
       )
-      .all(now, now, input.limit ?? 20) as Array<{ job_id: string }>;
+      .all(...params, input.limit ?? 20) as Array<{ job_id: string }>;
     const claimed: AutonomyJob[] = [];
     for (const row of rows) {
       const result = this.db

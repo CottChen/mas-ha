@@ -219,6 +219,7 @@ async function autonomyStorageSmoke(): Promise<void> {
   process.env.MAS_HOME = masHome;
   const { MasStore } = await import("../src/storage.js");
   const { recordRunEntropy } = await import("../src/core/entropy.js");
+  const { AutonomyLoop } = await import("../src/core/autonomy.js");
   const store = new MasStore();
   const autonomyWorkspace = join(tempRoot, "autonomy-workspace");
   mkdirSync(autonomyWorkspace, { recursive: true });
@@ -242,7 +243,22 @@ async function autonomyStorageSmoke(): Promise<void> {
       sourceRunId: "e2e-run",
       triggerAt: now,
       budget: { wakeups: 0, maxWakeups: 1 },
-      payload: { e2e: true },
+      payload: { e2e: true, reflectionTaskCompat: true },
+    });
+    store.addReflectionTask({
+      reflectionId: "e2e-autonomy-reflection",
+      sourceRunId: "e2e-run",
+      purpose: "E2E autonomy reflection compat",
+      triggerAt: now,
+      maxWakeups: 1,
+    });
+    store.addExperienceNode({
+      nodeId: "e2e-autonomy-reflection",
+      type: "reflection",
+      runId: "e2e-run",
+      status: "scheduled",
+      title: "E2E scheduled reflection node",
+      summary: "autonomy tick 后应同步为 completed",
     });
     store.addAutonomyJob({
       jobId: "e2e-autonomy-dream",
@@ -251,6 +267,14 @@ async function autonomyStorageSmoke(): Promise<void> {
       triggerAt: now,
       budget: { wakeups: 0, maxWakeups: 1 },
       payload: { sourceExperienceNodeId: "e2e-experience", reason: "e2e" },
+    });
+    store.addAutonomyJob({
+      jobId: "e2e-unrelated-autonomy-job",
+      type: "consolidation",
+      sourceRunId: "e2e-unrelated-run",
+      triggerAt: now,
+      budget: { wakeups: 0, maxWakeups: 1 },
+      payload: { e2e: "unrelated" },
     });
     const goal = store.createGoal({
       goalId: "e2e-goal-continuation",
@@ -276,18 +300,32 @@ async function autonomyStorageSmoke(): Promise<void> {
     store.addAutonomyJob({
       jobId: "e2e-goal-continuation-job",
       type: "goal_continuation",
+      sourceRunId: "e2e-run",
       goalId: goal.goalId,
       triggerAt: now,
       budget: { maxWakeups: 1 },
     });
-    const tick = runCli(["autonomy", "tick", "--limit", "5", "--dream-limit", "5"]);
+    const tick = runCli(["autonomy", "tick", "--limit", "5", "--dream-limit", "5", "--run-id", "e2e-run"]);
     const tickJson = JSON.parse(tick.stdout);
-    assert(tickJson.due?.processed >= 3, "autonomy tick 应处理 due autonomy_jobs");
+    assert(tickJson.due?.processed === 3, "autonomy tick --run-id 应只处理目标 run 的 due autonomy_jobs");
     assert(store.getAutonomyJob("e2e-autonomy-reflection")?.status === "completed", "due AutonomyJob reflection 应进入 completed");
     assert(store.getAutonomyJob("e2e-autonomy-dream")?.status === "completed", "due AutonomyJob dream 应进入 completed");
+    assert(store.getAutonomyJob("e2e-unrelated-autonomy-job")?.status === "scheduled", "autonomy tick --run-id 不应处理其他 run 的 due job");
+    assert(
+      tickJson.due?.completed?.some((job: any) => job.jobId === "e2e-autonomy-reflection" && job.status === "completed"),
+      "autonomy tick stdout 应返回 completed job 的最终状态",
+    );
+    assert(
+      store.listExperienceNodes({ runId: "e2e-run", type: "reflection", limit: 10 }).some((node) => node.nodeId === "e2e-autonomy-reflection" && node.status === "completed"),
+      "autonomy reflection job 完成后 Experience Graph reflection 节点应同步为 completed",
+    );
+    assert(store.getReflectionTask("e2e-autonomy-reflection")?.status === "completed", "兼容 reflection_task 应同步为 completed");
     assert(tickJson.due?.goalContinuations?.some((item: any) => item.goalId === goal.goalId), "autonomy tick 应处理 goal_continuation");
     assert(store.getGoal(goal.goalId)?.status === "paused", "缺少低熵证据时 GoalJudge 应暂停 Goal");
     assert(store.listGoalRuns(goal.goalId, 5).length === 1, "goal_continuation 应写入 GoalRun");
+    const jobIdFiltered = new AutonomyLoop(store, "e2e-job-id-filter").runDueAutonomyJobs({ jobId: "e2e-unrelated-autonomy-job", limit: 5 });
+    assert(jobIdFiltered.processed === 1, "runDueAutonomyJobs --job-id 应只处理指定 due job");
+    assert(jobIdFiltered.completed.some((job: any) => job.jobId === "e2e-unrelated-autonomy-job" && job.status === "completed"), "jobId 过滤返回值应包含指定 job 的最终状态");
 
     store.addApproval({ runId: "e2e-entropy-run", toolCallId: "tool-1", toolName: "shell", decision: "reject_once" });
     store.audit({

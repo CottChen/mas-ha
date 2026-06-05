@@ -17,6 +17,12 @@ type RunExperienceInput = {
   reason?: string;
 };
 
+type RunDueAutonomyJobsInput = {
+  limit?: number;
+  runId?: string;
+  jobId?: string;
+};
+
 export class AutonomyLoop {
   constructor(
     private readonly store = new MasStore(),
@@ -205,8 +211,13 @@ export class AutonomyLoop {
         incrementWakeups: true,
         payload: { ...asRecord(task.payload), sourceRunNeighborhood: neighborhood, reflectionDecision: decision },
       });
-      if (reflectionDecisionStatus(decision.decision) === "completed") completed.push(task);
-      if (reflectionDecisionStatus(decision.decision) === "cancelled") cancelled.push(task);
+      this.store.updateExperienceNode(task.reflectionId, {
+        status: reflectionDecisionStatus(decision.decision),
+        payload: { ...asRecord(task.payload), sourceRunNeighborhood: neighborhood, reflectionDecision: decision },
+      });
+      const finalTask = this.store.getReflectionTask(task.reflectionId) ?? task;
+      if (finalTask.status === "completed") completed.push(finalTask);
+      if (finalTask.status === "cancelled") cancelled.push(finalTask);
       this.store.addExperienceNode({
         nodeId: `${task.reflectionId}:run:${task.wakeups + 1}`,
         type: "reflection",
@@ -226,14 +237,20 @@ export class AutonomyLoop {
     return { processed: due.length, completed, cancelled };
   }
 
-  runDueAutonomyJobs(limit = 20): {
+  runDueAutonomyJobs(input: number | RunDueAutonomyJobsInput = 20): {
     processed: number;
     completed: AutonomyJob[];
     cancelled: AutonomyJob[];
     blocked: AutonomyJob[];
     goalContinuations: ReturnType<GoalController["processContinuation"]>[];
   } {
-    const due = this.store.claimDueAutonomyJobs({ ownerId: this.ownerId, limit });
+    const options = typeof input === "number" ? { limit: input } : input;
+    const due = this.store.claimDueAutonomyJobs({
+      ownerId: this.ownerId,
+      limit: options.limit,
+      sourceRunId: options.runId,
+      jobId: options.jobId,
+    });
     const completed: AutonomyJob[] = [];
     const cancelled: AutonomyJob[] = [];
     const blocked: AutonomyJob[] = [];
@@ -247,8 +264,6 @@ export class AutonomyLoop {
           incrementWakeups: true,
           payload: { ...asRecord(job.payload), sourceRunNeighborhood: neighborhood, reflectionDecision: decision },
         });
-        if (reflectionDecisionStatus(decision.decision) === "completed") completed.push(job);
-        if (reflectionDecisionStatus(decision.decision) === "cancelled") cancelled.push(job);
         if (asRecord(job.payload).reflectionTaskCompat) {
           this.store.updateReflectionTask(job.jobId, {
             status: reflectionDecisionStatus(decision.decision),
@@ -256,6 +271,11 @@ export class AutonomyLoop {
             payload: { ...asRecord(job.payload), sourceRunNeighborhood: neighborhood, reflectionDecision: decision },
           });
         }
+        this.store.updateExperienceNode(job.jobId, {
+          status: reflectionDecisionStatus(decision.decision),
+          payload: { ...asRecord(job.payload), sourceRunNeighborhood: neighborhood, reflectionDecision: decision },
+        });
+        pushFinalJob(this.store, job, { completed, cancelled, blocked });
         this.store.audit({
           runId: job.sourceRunId ?? "system",
           actor: "superego",
@@ -292,7 +312,7 @@ export class AutonomyLoop {
           target: job.jobId,
           payload: { patch, patchNodeId, pruned, prunedNodes, decayedEdges, loopCount },
         });
-        completed.push(job);
+        pushFinalJob(this.store, job, { completed, cancelled, blocked });
         continue;
       }
       if (job.type === "consolidation") {
@@ -301,15 +321,13 @@ export class AutonomyLoop {
           incrementWakeups: true,
           payload: { ...asRecord(job.payload), mode: "candidate_only" },
         });
-        completed.push(job);
+        pushFinalJob(this.store, job, { completed, cancelled, blocked });
         continue;
       }
       if (job.type === "goal_continuation") {
         const result = this.goalController.processContinuation(job);
         goalContinuations.push(result);
-        if (result.decision === "done" || result.decision === "pause" || result.decision === "expire") completed.push(job);
-        else if (result.decision === "blocked" || result.decision === "missing_goal") blocked.push(job);
-        else cancelled.push(job);
+        pushFinalJob(this.store, job, { completed, cancelled, blocked });
       }
     }
     return { processed: due.length, completed, cancelled, blocked, goalContinuations };
@@ -350,6 +368,17 @@ function maybeCreateEvalCandidate(store: MasStore, input: RunExperienceInput): E
     confidence: failedVerification ? 0.75 : hasBlocking ? 0.7 : 0.55,
   });
   return store.listEvalCandidates({ sourceRunId: input.runId, limit: 1 })[0];
+}
+
+function pushFinalJob(
+  store: MasStore,
+  claimed: AutonomyJob,
+  buckets: { completed: AutonomyJob[]; cancelled: AutonomyJob[]; blocked: AutonomyJob[] },
+): void {
+  const finalJob = store.getAutonomyJob(claimed.jobId) ?? claimed;
+  if (finalJob.status === "completed") buckets.completed.push(finalJob);
+  else if (finalJob.status === "cancelled" || finalJob.status === "pruned") buckets.cancelled.push(finalJob);
+  else if (finalJob.status === "blocked") buckets.blocked.push(finalJob);
 }
 
 function createDreamPatch(job: AutonomyJob): DreamGraphPatch {

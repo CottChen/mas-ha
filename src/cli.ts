@@ -214,7 +214,8 @@ function printHelp(): void {
   mas candidate list|promote|reject|retire [candidate-id] [--goal-id <id>] [--status candidate]
   mas status [--limit 20]
   mas reflect due|list|dream [--limit 20]
-  mas autonomy daemon|tick|status [--interval 60000] [--limit 20]
+  mas autonomy tick [--interval 60000] [--limit 20] [--run-id <runId>] [--job-id <jobId>]
+  mas autonomy daemon|status [--interval 60000] [--limit 20]
   mas doctor
 
 编排模式：
@@ -256,6 +257,8 @@ async function autonomy(args: string[], flags: Map<string, string | boolean>): P
       dueLimit: limit,
       dreamLimit,
       runDream,
+      runId: typeof flags.get("run-id") === "string" ? String(flags.get("run-id")) : undefined,
+      jobId: typeof flags.get("job-id") === "string" ? String(flags.get("job-id")) : undefined,
       ownerId: `manual-autonomy-tick-${process.pid}`,
       unrefTimer: false,
     });

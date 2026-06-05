@@ -6,87 +6,9 @@
 
 | ID | 严重级别 | 标题 | 状态 | 来源 |
 | --- | --- | --- | --- | --- |
-| BUG-20260605-001 | P2 | `mas autonomy tick` stdout 返回 claim 快照，completed job 仍显示 `running` | active | AionUI 真实 E2E |
-| BUG-20260605-002 | P2 | reflection job 完成后 Experience Graph 的 reflection 节点仍显示 `scheduled` | active | 长期 Goal E2E |
 | BUG-20260605-003 | P2 | 长期 Goal 的 `goal_continuation` 会被用户普通 prompt 取消，后续无 `goal_runs` | active | 长期 Goal E2E |
-| BUG-20260605-004 | P3 | 全局 autonomy tick 缺少按 runId/jobId 过滤，测试时会处理无关历史 due job | active | AionUI 真实 E2E |
 | BUG-20260605-005 | P3 | `user_feedback` 低熵信号声明存在，但 AionUI 用户纠正链路尚未验证能沉淀该信号 | active | 代码检查 + E2E 缺口 |
-
-## BUG-20260605-001：`mas autonomy tick` stdout 返回 claim 快照，completed job 仍显示 `running`
-
-- 严重级别：P2
-- 状态：active
-- 发现日期：2026-06-05
-- 来源：AionUI 真实 E2E、自主性 due job 补测
-- 影响范围：CLI 可观测性、自主性调度排查、测试断言
-
-复现步骤：
-
-1. 准备至少一个 due `autonomy_jobs` 记录。
-2. 执行 `./bin/mas autonomy tick --limit 20 --dream-limit 20`。
-3. 对比 stdout 中 `due.completed[]` 和 SQLite 中同一 job 的最终状态。
-
-期望结果：
-
-- stdout 中已完成 job 的状态应显示最终状态 `completed`。
-
-实际结果：
-
-- stdout 的 `due.completed[]` 内 job 对象来自 claim 时快照，字段仍显示 `status=running`。
-- SQLite 中同一 job 已更新为 `completed`。
-
-证据：
-
-- `RTE_AUTONOMY_DREAM_20260605_1425`
-- `RTE_LONG_AUTONOMY_SELF_CORRECT_20260605_150051`
-- `docs/E2E_TEST_REPORT_2026-06-05.md`
-
-当前判断或修复建议：
-
-- `runDueAutonomyJobs` 返回值应使用更新后的 job 快照，或 CLI 输出中明确区分 `claimed` 与 `final`。
-
-复测要求：
-
-- 构造 due reflection、consolidation、dream job。
-- 执行 tick 后断言 stdout 和 DB 最终状态一致。
-
-## BUG-20260605-002：reflection job 完成后 Experience Graph 的 reflection 节点仍显示 `scheduled`
-
-- 严重级别：P2
-- 状态：active
-- 发现日期：2026-06-05
-- 来源：长期 Goal E2E
-- 影响范围：Experience Graph 状态一致性、反思可观测性
-
-复现步骤：
-
-1. 运行长期 Goal 任务 `RTE_LONG_AUTONOMY_SELF_CORRECT_20260605_150051`。
-2. 将该 run 的 reflection job 置为 due。
-3. 执行 `./bin/mas autonomy tick --limit 20 --dream-limit 20`。
-4. 查询 `reflection_tasks`、`autonomy_jobs` 和 `experience_nodes.type='reflection'`。
-
-期望结果：
-
-- reflection job 和对应 Experience Graph 节点状态一致，或新增一个到期反思完成节点。
-
-实际结果：
-
-- `reflection_tasks` 和 `autonomy_jobs` 已为 `completed`。
-- 原 `experience_nodes.type=reflection` 节点仍为 `scheduled`。
-
-证据：
-
-- Run：`729b5cfa-0791-4bf7-aa1c-d43972193a2c`
-- Reflection：`reflection:729b5cfa-0791-4bf7-aa1c-d43972193a2c`
-- `docs/E2E_TEST_REPORT_2026-06-05.md`
-
-当前判断或修复建议：
-
-- `runDueAutonomyJobs` 处理 reflection job 后同步更新对应 `experience_nodes` 状态，或显式写入一条 `reflection completed` 经验节点并把旧节点视为计划节点。
-
-复测要求：
-
-- tick 后同时断言 job、reflection task 和 Experience Graph 中的反思状态。
+| BUG-20260605-006 | P3 | AionUI 思考区持续追加大量重复感 thought，MAS 缺少 thought 流去重、分段和诊断信息 | active | AionUI 真实会话排查 |
 
 ## BUG-20260605-003：长期 Goal 的 `goal_continuation` 会被用户普通 prompt 取消，后续无 `goal_runs`
 
@@ -129,42 +51,6 @@
 
 - 创建 Goal 后发送普通 prompt，确认是否会按设计产生下一次 continuation 或明确取消原因。
 
-## BUG-20260605-004：全局 autonomy tick 缺少按 runId/jobId 过滤，测试时会处理无关历史 due job
-
-- 严重级别：P3
-- 状态：active
-- 发现日期：2026-06-05
-- 来源：AionUI 真实 E2E、长期 Goal E2E
-- 影响范围：真实环境测试隔离、运维安全、缺陷定位
-
-复现步骤：
-
-1. 在真实 MAS_HOME 中让多个历史 job 到期。
-2. 为某个目标 run 推进 due job。
-3. 执行 `./bin/mas autonomy tick --limit 20 --dream-limit 20`。
-
-期望结果：
-
-- 测试或诊断时可以按 runId/jobId 限定 tick 范围，避免处理无关历史 job。
-
-实际结果：
-
-- tick 是全局 due 扫描。
-- 本轮长期 Goal 补测中，除目标 run 的 3 个 job 外，还处理了 2 个旧 due consolidation job。
-
-证据：
-
-- `RTE_LONG_AUTONOMY_SELF_CORRECT_20260605_150051` tick 输出 `due.processed=5`，目标 run 只占 3 个 job。
-
-当前判断或修复建议：
-
-- 为 CLI 增加 `--run-id` 或 `--job-id` 过滤。
-- E2E 默认使用隔离 `MAS_HOME`。
-
-复测要求：
-
-- 构造多个 due job，使用过滤参数只处理目标 run/job。
-
 ## BUG-20260605-005：`user_feedback` 低熵信号声明存在，但 AionUI 用户纠正链路尚未验证能沉淀该信号
 
 - 严重级别：P3
@@ -202,3 +88,49 @@
 复测要求：
 
 - 用户纠正后能查询到 `user_feedback` signal，且 ledger 的 `signalIds` 包含该 signal。
+
+## BUG-20260605-006：AionUI 思考区持续追加大量重复感 thought，MAS 缺少 thought 流去重、分段和诊断信息
+
+- 严重级别：P3
+- 状态：active
+- 发现日期：2026-06-05
+- 来源：AionUI 真实会话排查
+- 影响范围：AionUI 可读性、长任务性能、thought 流排查
+
+复现或观察入口：
+
+1. 打开 AionUI workspace `custom-temp-1780650717388`。
+2. 观察任务运行期间的折叠“思考中”区域。
+3. 查询 MAS 数据库 `C:/Users/Administrator/.mas/orchestration/data/mas.sqlite` 中 run `7acaa17e-0588-473d-a84e-76978ca13570` 的事件。
+
+期望结果：
+
+- AionUI 思考区应能按角色、轮次或阶段清晰展示，或对高频 thought chunk 做限流、折叠和去重。
+- MAS 应保留足够的非敏感诊断信息，例如 thought chunk 计数、长度、hash、role、iteration、contentIndex 和 block 边界，便于判断是模型重复、SDK 重放还是 UI 追加策略问题。
+
+实际结果：
+
+- 目标 run 仍处于 `running`，但 thought 流已产生大量事件。
+- 该 run 已记录约 4985 条 `thinking_delta`，其中 Superego 第 1 轮约 3396 条，Ego 第 2 轮约 1284 条。
+- MAS 当前把 Pi SDK 的 `thinking_delta.delta` 原样转成 ACP `agent_thought_chunk`，没有角色前缀、分块、限流或去重。
+- MAS 对 `message_update` 的 raw 内容返回 `undefined`，导致事后无法确认具体 thought 文本是否完全重复。
+- AionUI 普通日志和 Local/Session Storage 未保留该会话的 ACP thought 内容，无法从 UI 侧复原每个 chunk。
+
+证据：
+
+- Workspace：`custom-temp-1780650717388`
+- Session：`mas-b1385ca4-813e-4237-b97e-711627c088e7`
+- Run：`7acaa17e-0588-473d-a84e-76978ca13570`
+- 代码路径：`src/pi/pi-sdk.ts` 将 `thinking_delta` 直接调用 `sink.thought`；`src/acp/acp-sink.ts` 将其发送为 `agent_thought_chunk`。
+- 诊断盲点：`src/pi/pi-sdk.ts` 的 `rawPiEventForStorage` 对 `message_update` 返回 `undefined`。
+
+当前判断或修复建议：
+
+- 优先实现 thought 流限流和展示分段：按 role/iteration 增加阶段前缀，并对连续重复片段或超长 thought 做折叠。
+- 增加非敏感 thought telemetry：只记录长度、hash、contentIndex、block 序号和是否疑似重复，不落库原始思考文本。
+- 如需保持 AionUI 思考区轻量，可默认只发送阶段提示，不逐 token 转发全部 `thinking_delta`。
+
+复测要求：
+
+- 构造长任务或使用真实 AionUI 会话运行 MAS。
+- 断言 AionUI 思考区不会无限追加重复感短句，且 MAS 事件中能看到 thought 计数、hash 和折叠统计。

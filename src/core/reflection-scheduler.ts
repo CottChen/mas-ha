@@ -6,6 +6,8 @@ export interface ReflectionSchedulerOptions {
   dueLimit: number;
   dreamLimit: number;
   runDream: boolean;
+  runId?: string;
+  jobId?: string;
   ownerId?: string;
   leaseName?: string;
   leaseTtlMs?: number;
@@ -55,7 +57,11 @@ export class ReflectionScheduler {
         metadata: { pid: process.pid, intervalMs: this.options.intervalMs },
       });
       if (!leaseAcquired) return { leaseAcquired: false };
-      const due = this.autonomy.runDueAutonomyJobs(this.options.dueLimit);
+      const due = this.autonomy.runDueAutonomyJobs({
+        limit: this.options.dueLimit,
+        runId: this.options.runId,
+        jobId: this.options.jobId,
+      });
       const dream = this.options.runDream ? this.autonomy.dreamPrune(this.options.dreamLimit) : { pruned: 0 };
       if (due.processed > 0 || dream.pruned > 0) {
         this.store.audit({
