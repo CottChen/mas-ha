@@ -53,6 +53,7 @@ MAS 是一个多智能体执行系统 MVP，目标是通过 ACP 协议接入 Aio
 - `docs/ROADMAP.md`：未来规划和路线图。
 - `docs/AUTONOMY.md`：MAS 自主性、Experience Graph、反思和 Dream 模式设计。
 - `docs/AUTONOMY_TODO.md`：MAS 自主性机制的具体待办事项。
+- `bug-tracking/`：缺陷跟踪目录，按 active、pending-verification、verified 和 archive/closed 生命周期拆分维护。
 
 ## 启动和验证命令
 
@@ -148,6 +149,7 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - 对用户工作区的写入和命令执行必须能审计，至少记录 runId、toolCallId、toolName、decision 和 rawInput。
 - 新增长期规划、架构演进、阶段目标时写入 `docs/ROADMAP.md`，不要塞进 `AGENTS.md`。
 - MAS 自主性的具体实现待办统一维护在 `docs/AUTONOMY_TODO.md`，不要把详细任务清单写入 `AGENTS.md`。
+- 缺陷必须按生命周期进入 `bug-tracking/`：当前待处理维护在 `active-bugs.md`，已修复待复测维护在 `pending-verification.md`，已验证和已关闭问题分别进入 `verified-*` 与 `archive/closed-*`；详细规则见 `bug-tracking/README.md`。
 
 ## 多人协作与 Git 约束
 
