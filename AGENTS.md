@@ -22,9 +22,9 @@
 
 ## 项目定位
 
-MAS 是一个多智能体执行系统 MVP，目标是通过 ACP 协议接入 AionUI，并在内部使用 Pi SDK 提供自主 coding agent 能力。
+MAS 是一个系统化多智能体执行与自主改进系统，目标是通过 ACP 协议接入 AionUI，并在内部使用 Pi SDK 提供可审计、可验收、可持续改进的 coding agent 能力。
 
-当前 MVP 的核心形态：
+当前核心形态：
 
 - AionUI 作为 ACP Client / UI。
 - MAS 作为自定义 ACP Agent，对外提供 `mas acp`。
@@ -50,9 +50,13 @@ MAS 是一个多智能体执行系统 MVP，目标是通过 ACP 协议接入 Aio
 - `src/pi/`：Pi SDK 动态加载和 Pi session 适配。
 - `src/storage.ts`：SQLite 持久化。
 - `src/types.ts`：MAS 内部共享类型。
-- `docs/ROADMAP.md`：未来规划和路线图。
-- `docs/AUTONOMY.md`：MAS 自主性、Experience Graph、反思和 Dream 模式设计。
-- `docs/AUTONOMY_TODO.md`：MAS 自主性机制的具体待办事项。
+- `docs/README.md`：文档导航、权威来源和维护边界。
+- `docs/ARCHITECTURE.md`：系统定位、角色边界、执行链路、异质工具、模型策略、审计和会话语义。
+- `docs/AIONUI.md`：AionUI 接入、ACP 验证、本地模型、外部检索配置和日志排查。
+- `docs/AGENT_PROMPTS.md`：HA / Ego / Superego 基础 prompt、typed tool 和上下文注入顺序。
+- `docs/AUTONOMY.md`：MAS 自主性、Experience Graph、反思、Dream 和 AuditPacket 细节。
+- `docs/ROADMAP.md`：当前系统状态、近期硬化目标和生产化路线。
+- `docs/AUTONOMY_TODO.md`：MAS 自主性机制的具体实施清单。
 - `bug-tracking/`：缺陷跟踪目录，按 active、pending-verification、verified 和 archive/closed 生命周期拆分维护。
 
 ## 启动和验证命令
@@ -141,6 +145,9 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - Experience Graph 是 MAS 长期自主性的核心记忆结构，应串联任务、执行过程、结果、经验、反思和 Dream 裁剪；反思可以递归，但必须受能量预算、拓扑约束和审计约束控制。
 - MAS 自主性调度必须跨会话、全局单实例运行；推荐入口是 `mas autonomy daemon`，通过 SQLite scheduler lease 和任务 claim 避免多个 AionUI 会话重复处理同一任务。
 - Superego 评审必须基于 Ego 自报和 MAS 系统审计证据共同判断；`AuditPacket` 中的工具调用、审批、写入路径和 `changed_files` 对账结果优先级高于 Ego 自报。
+- HA 负责代表用户做最终验收和交叉验证；AionUI 会话模型选择只作用于 HA，用于形成用户代理视角的异质 Critic。Ego 和 Superego 未显式配置角色模型时直接使用 Pi 默认模型。
+- HA 拥有 `mas_external_search` 只读外部检索工具，用于引入公开证据候选并跳出 MAS 内部固定吸引子；Ego 不应获得外部检索工具，避免执行层扩大任务边界。
+- Superego 本身是系统审计视角的 Critic/Judge；如需异质强模型必须通过 `MAS_SUPEREGO_MODEL` 显式配置，未配置时不探测其他模型，直接回退 Pi 默认模型。
 - Superego 默认验收策略是当前状态门禁 + 历史事实留痕：当前仍存在的 `output` 目录外写入、只读输入路径写入或失败验证伪装为成功时必须阻塞；历史已清理的越界写入和 `changed_files` 漏报必须留痕，但不单独作为永久阻塞。
 - Superego 抽样复核应采用分层风险抽样 + 少量随机扰动；snapshot/diff 只能做边界目录轻量元数据 diff + 风险触发深查，不能默认全量重审计。
 - HA 生成验收合同时必须声明只读输入、允许输出和工作目录边界；baseline snapshot 由 MAS 框架层在 Ego 执行前生成，不能依赖 Ego 自报。
@@ -148,6 +155,7 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - 权限策略必须默认保守：读自动，写和命令需审批。
 - 对用户工作区的写入和命令执行必须能审计，至少记录 runId、toolCallId、toolName、decision 和 rawInput。
 - 新增长期规划、架构演进、阶段目标时写入 `docs/ROADMAP.md`，不要塞进 `AGENTS.md`。
+- 系统定位、角色职责、模型策略和工具分工只在 `docs/ARCHITECTURE.md` 定义；其他文档引用或简述，不重复维护。
 - MAS 自主性的具体实现待办统一维护在 `docs/AUTONOMY_TODO.md`，不要把详细任务清单写入 `AGENTS.md`。
 - 缺陷必须按生命周期进入 `bug-tracking/`：当前待处理维护在 `active-bugs.md`，已修复待复测维护在 `pending-verification.md`，已验证和已关闭问题分别进入 `verified-*` 与 `archive/closed-*`；详细规则见 `bug-tracking/README.md`。
 

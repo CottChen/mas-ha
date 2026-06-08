@@ -78,7 +78,7 @@
 
 - `src/types.ts` 声明 `user_feedback`。
 - `src/core/entropy.ts` 当前信号收集路径。
-- `docs/E2E_TEST_REPORT_2026-06-05.md` 未覆盖项。
+- 2026-06-05 独立 E2E 测试曾记录该未覆盖项；历史报告已被文档整理删除，当前缺陷事实以本文为准。
 
 当前判断或修复建议：
 

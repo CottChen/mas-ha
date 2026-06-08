@@ -1,10 +1,10 @@
 # MAS 自主性待办
 
-本文记录 MAS 自主性机制的具体待办事项；长期原则见 `AGENTS.md`，设计背景见 `docs/AUTONOMY.md`。
+本文记录 MAS 自主性机制的具体实施清单和完成状态；长期原则见 `AGENTS.md`，当前架构见 `docs/ARCHITECTURE.md`，设计背景见 `docs/AUTONOMY.md`。
 
-低熵自主性与 Goal 控制面设计见 `docs/GOAL_ENTROPY_CONTROL.md`。核心原则是：MAS 不依赖 Goal 也持续自主改进；Goal 只增加人的可控性。
+低熵自主性与 Goal 控制面当前设计见 `docs/AUTONOMY.md` 和 `docs/ARCHITECTURE.md`。核心原则是：MAS 不依赖 Goal 也持续自主改进；Goal 只增加人的可控性。
 
-## 最小闭环
+## 自主闭环基础能力
 
 - [x] 为 `mas autonomy tick` / `mas reflect due` 增加端到端回归测试，覆盖 scheduled -> running -> completed / cancelled。
 - [x] 为 `mas reflect dream` 增加裁剪回归测试，覆盖预算耗尽节点进入 `pruned`。
@@ -61,7 +61,7 @@
 - [x] 扰动只允许进入 HA/Ego/Superego/Dream 上下文；任何读写或执行都必须转入 Ego 普通工具链并走权限审批。
 - [x] Dream 负责发现固定吸引子和重复模式，生成扰动候选库；Superego / AutonomyLoop 默认评估扰动安全性和信息增益，有 Goal 时 GoalController 参与控制面判断。
 - [x] 将扰动结果转成 `LowEntropySignal` 后才能固化到 Experience Graph、eval、policy、skill 或 doc candidate。
-- [x] 固定低风险角色扰动作为 MVP 默认机制；复杂算法策略按 novelty、harmlessness、validationYield、escapeRate、regret 和 safetyIncidents 评估后再晋升。
+- [x] 固定低风险角色扰动作为当前默认机制；复杂算法策略按 novelty、harmlessness、validationYield、escapeRate、regret 和 safetyIncidents 评估后再晋升。
 
 ## 持续改进飞轮
 

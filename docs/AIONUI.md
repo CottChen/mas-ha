@@ -1,6 +1,6 @@
 # AionUI 接入与模型配置
 
-本文记录 MAS 接入 AionUI 自定义 ACP Agent 的配置方式，以及 Pi SDK 使用 DashScope 兼容模型的本地配置方法。
+本文记录 MAS 接入 AionUI 自定义 ACP Agent 的配置方式，以及 Pi SDK 模型、角色模型和外部检索的本地配置方法。系统定位、角色职责和工具分工的权威说明见 `docs/ARCHITECTURE.md`。
 
 ## 前置检查
 
@@ -31,8 +31,8 @@ npm run doctor
 
 当前支持两种编排模式：
 
-- `ha-ego-superego`：默认模式，HA 生成验收合同，Ego 执行，Superego 评审并按需返工。
-- `ha-ego`：HA 生成验收合同，Ego 执行，跳过 Superego 评审和返工。
+- `ha-ego-superego`：默认模式，HA 生成验收合同，Ego 执行，Superego 评审并按需返工，最后由 HA 终验。
+- `ha-ego`：HA 生成验收合同，Ego 执行，跳过 Superego 评审和返工，但仍由 HA 终验。
 
 如果 AionUI 使用 custom backend 启动方式，也可能传入 `--experimental-acp`。MAS 已支持以下等价入口：
 
@@ -79,6 +79,50 @@ MAS 会持久化同一 ACP session 下的 user / assistant 文本消息。`sessi
 
 MAS 启动时会自动读取项目根目录 `.env.local`。该文件只用于本地 worktree 差异配置，不提交仓库。
 
+### 角色模型配置
+
+MAS 通过 Pi SDK 创建 HA、Ego、Superego 三类内部会话。AionUI 的会话模型选择只作用于 HA，因为 HA 代表用户做路由、验收合同和最终交叉验证。Ego 和 Superego 未显式配置角色模型时直接使用 Pi 默认模型，不会被 AionUI 会话模型选择覆盖。
+
+可选环境变量：
+
+```bash
+MAS_HA_MODEL=
+MAS_EGO_MODEL=
+MAS_SUPEREGO_MODEL=
+MAS_SUPEREGO_THINKING_LEVEL=high
+```
+
+规则：
+
+- `MAS_HA_MODEL` 优先级高于 AionUI 会话模型选择；未配置时 HA 使用 AionUI 当前选择模型，仍未选择时使用 Pi 默认模型。
+- `MAS_EGO_MODEL` 和 `MAS_SUPEREGO_MODEL` 只在需要单独覆盖角色模型时使用；未配置时直接使用 Pi 默认模型。
+- 如果显式配置的角色模型在 Pi 模型注册表中不可用，或当前没有认证，MAS 会回退到 Pi 默认模型并在 ACP `session/new` metadata 与 MAS event 中记录 warning。
+- thinking level 可以直接写在模型后缀中，例如 `provider/model:xhigh`，也可以用 `MAS_<ROLE>_THINKING_LEVEL` 单独配置。
+
+### 外部检索配置
+
+HA 拥有 `mas_external_search` 只读外部检索工具，用于在路由回答和最终验收时引入 MAS 内部证据之外的公开证据候选。Ego 不获得该工具，避免执行层用外部搜索扩大任务边界；Superego 继续偏系统审计证据。
+
+默认情况下，MAS 使用 DuckDuckGo Instant Answer API 作为无密钥外部检索后备。生产或稳定测试环境建议配置自己的搜索/RAG 服务：
+
+```bash
+MAS_EXTERNAL_SEARCH_ENDPOINT=https://example.internal/search?q={query}&limit={limit}
+```
+
+端点返回 JSON，优先支持以下结构之一：
+
+```json
+{"results":[{"title":"...","url":"...","snippet":"...","source":"..."}]}
+```
+
+或：
+
+```json
+{"items":[{"name":"...","link":"...","summary":"...","source":"..."}]}
+```
+
+外部检索结果只是候选证据，不能覆盖用户目标、验收合同、当前仓库证据、AuditPacket 或确定性审计门禁。HA 采用外部结果时必须保留来源和检索时间，并与本地证据交叉验证。
+
 常用字段：
 
 ```bash
@@ -113,9 +157,11 @@ printf '%s\n' \
 成功时 `session/new` 结果中应包含：
 
 ```text
-models.currentModelId = dashscope-anthropic/qwen3.6-plus
+models.currentModelId = <Pi SDK 当前实际模型，例如 zai-anthropic/GLM-5.1>
 configOptions 中的 orchestrationMode
 ```
+
+`models.currentModelId` 和 `models.availableModels` 由 MAS 读取 Pi SDK 后端配置生成，不再使用 ACP 层硬编码值。实际来源是本机 `~/.pi/agent/settings.json`、`~/.pi/agent/models.json` 和 Pi 模型注册表；`metadata.modelConfig.defaultThinkingLevel` 会返回当前默认 thinking level。
 
 验证 `/compact` 命令公告和技能 metadata，可查看 `session/new` 后 MAS 发送的 `session/update`，其中应包含 `available_commands_update`；如果配置了 `MAS_SKILL_PATHS`，`session/new` 结果的 `metadata.skills` 应包含可发现技能摘要。
 

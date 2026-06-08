@@ -6,6 +6,7 @@ import { normalizeOrchestrationMode, orchestrationModeList } from "../core/orche
 import { ReflectionScheduler } from "../core/reflection-scheduler.js";
 import { MasRunner } from "../core/runner.js";
 import { discoverSkills } from "../core/skills.js";
+import { getPiBackendModelSummary } from "../pi/pi-sdk.js";
 import { MasStore } from "../storage.js";
 import type { ApprovalMode, ApprovalModePolicy, ConversationContext, OrchestrationMode, SkillSummary } from "../types.js";
 
@@ -16,6 +17,7 @@ type SessionState = {
   orchestrationMode: OrchestrationMode;
   context: ConversationContext;
   skills: SkillSummary[];
+  selectedModel?: string;
   abort?: AbortController;
 };
 
@@ -75,9 +77,10 @@ export function startAcpServer(options: AcpServerOptions): void {
     const approvalMode = normalizeInitialApprovalMode(params, options.approvalMode);
     const cwd = normalizeCwd(params?.cwd);
     const skills = await safeDiscoverSkills(cwd);
-    sessions.set(sessionId, { sessionId, cwd, approvalMode, orchestrationMode, context: { summary: "", turns: [] }, skills });
+    const selectedModel = extractModelId(params);
+    sessions.set(sessionId, { sessionId, cwd, approvalMode, orchestrationMode, context: { summary: "", turns: [] }, skills, selectedModel });
     queueSessionUpdates(peer, sessionId, { summary: "", turns: [] }, skills, approvalMode, orchestrationMode);
-    return sessionResponse(sessionId, approvalMode, orchestrationMode, skills);
+    return sessionResponse(sessionId, cwd, approvalMode, orchestrationMode, skills, selectedModel);
   });
 
   peer.on("session/load", async (params) => {
@@ -87,6 +90,7 @@ export function startAcpServer(options: AcpServerOptions): void {
     const cwd = normalizeCwd(params?.cwd);
     const skills = await safeDiscoverSkills(cwd);
     const context = store.getConversationContext(sessionId);
+    const selectedModel = extractModelId(params);
     sessions.set(sessionId, {
       sessionId,
       cwd,
@@ -94,9 +98,10 @@ export function startAcpServer(options: AcpServerOptions): void {
       orchestrationMode,
       context,
       skills,
+      selectedModel,
     });
     queueSessionUpdates(peer, sessionId, context, skills, approvalMode, orchestrationMode);
-    return sessionResponse(sessionId, approvalMode, orchestrationMode, skills);
+    return sessionResponse(sessionId, cwd, approvalMode, orchestrationMode, skills, selectedModel);
   });
 
   peer.on("session/prompt", async (params) => {
@@ -174,6 +179,7 @@ export function startAcpServer(options: AcpServerOptions): void {
         maxIterations: options.maxIterations,
         signal: abort.signal,
         goalId: activeGoal?.goalId,
+        model: session.selectedModel,
         conversationHistory: session.context.turns,
         conversationSummary: session.context.summary,
         availableSkills: session.skills,
@@ -207,9 +213,14 @@ export function startAcpServer(options: AcpServerOptions): void {
       session.approvalMode = approvalModeFromAcpMode(params?.modeId ?? params?.id ?? params?.mode ?? params?.value, session.approvalMode);
     }
     queueModeUpdate(peer, session.sessionId, session.approvalMode);
-    return sessionResponse(session.sessionId, session.approvalMode, session.orchestrationMode, session.skills);
+    return sessionResponse(session.sessionId, session.cwd, session.approvalMode, session.orchestrationMode, session.skills, session.selectedModel);
   });
-  peer.on("session/set_model", () => ({}));
+  peer.on("session/set_model", async (params) => {
+    const session = sessions.get(String(params?.sessionId ?? ""));
+    if (!session) return {};
+    session.selectedModel = extractModelId(params);
+    return sessionResponse(session.sessionId, session.cwd, session.approvalMode, session.orchestrationMode, session.skills, session.selectedModel);
+  });
   peer.on("session/set_config_option", (params) => {
     const session = sessions.get(String(params?.sessionId ?? ""));
     if (!session) return {};
@@ -218,17 +229,21 @@ export function startAcpServer(options: AcpServerOptions): void {
       session.orchestrationMode = normalizeOrchestrationMode(params?.value);
       queueConfigUpdate(peer, session.sessionId, session.approvalMode);
     }
-    return sessionResponse(session.sessionId, session.approvalMode, session.orchestrationMode, session.skills);
+    return sessionResponse(session.sessionId, session.cwd, session.approvalMode, session.orchestrationMode, session.skills, session.selectedModel);
   });
   peer.start();
 }
 
-function sessionResponse(
+async function sessionResponse(
   sessionId: string,
+  cwd: string,
   approvalMode: ApprovalMode,
   orchestrationMode: OrchestrationMode,
   skills: SkillSummary[],
-): Record<string, unknown> {
+  selectedModel?: string,
+): Promise<Record<string, unknown>> {
+  const modelSummary = await getPiBackendModelSummary(cwd, selectedModel);
+  const currentModelId = selectedModel && modelSummary.availableModels.some((model) => model.id === selectedModel) ? selectedModel : modelSummary.currentModelId;
   return {
     sessionId,
     modes: [
@@ -246,14 +261,17 @@ function sessionResponse(
       },
     ],
     models: {
-      currentModelId: "dashscope-anthropic/qwen3.6-plus",
-      availableModels: [
-        { id: "dashscope-anthropic/qwen3.6-plus", name: "DashScope qwen3.6-plus" },
-        { id: "dashscope-anthropic/kimi-k2.5", name: "DashScope kimi-k2.5" },
-        { id: "dashscope-anthropic/qwen3.5-plus", name: "DashScope qwen3.5-plus" },
-      ],
+      currentModelId,
+      availableModels: modelSummary.availableModels,
     },
     metadata: {
+      modelConfig: {
+        source: "pi-sdk",
+        defaultThinkingLevel: modelSummary.defaultThinkingLevel,
+        selectedModelId: currentModelId,
+        roleModels: modelSummary.roleModels,
+        warning: modelSummary.warning,
+      },
       skills: skills.map((skill) => ({ name: skill.name, description: skill.description, path: skill.path })),
     },
   };
@@ -269,6 +287,20 @@ function normalizeInitialApprovalMode(params: unknown, fallback: ApprovalMode): 
   const requested = input.modeId ?? input.mode ?? input.currentModeId;
   if (fallback === "approve-all" && (requested === "default" || requested === "approve-reads")) return fallback;
   return approvalModeFromAcpMode(requested, fallback);
+}
+
+function extractModelId(params: unknown): string | undefined {
+  if (!params || typeof params !== "object") return undefined;
+  const input = params as Record<string, unknown>;
+  const model = input.model;
+  const value =
+    input.modelId ??
+    input.currentModelId ??
+    input.id ??
+    input.value ??
+    (model && typeof model === "object" ? (model as Record<string, unknown>).id : undefined) ??
+    (typeof model === "string" ? model : undefined);
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function approvalModeFromAcpMode(value: unknown, fallback: ApprovalMode): ApprovalMode {

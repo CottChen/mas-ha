@@ -441,7 +441,7 @@ function reflect(task: ReflectionTask, neighborhood: unknown[]): ReflectionDecis
   if (neighborhood.length >= 8) {
     return { decision: "abstract", summary: "source run 邻域已有足够经验节点，本轮抽象为经验候选。" };
   }
-  return { decision: "cancel", summary: "最小闭环当前没有检测到新的外部信号，按 noNewSignalAction 取消本次反思链。" };
+  return { decision: "cancel", summary: "当前自主闭环没有检测到新的外部信号，按 noNewSignalAction 取消本次反思链。" };
 }
 
 function reflectJob(job: AutonomyJob, neighborhood: unknown[]): ReflectionDecision {

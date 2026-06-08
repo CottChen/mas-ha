@@ -69,7 +69,29 @@ async function acpSmoke(): Promise<void> {
     const sessionId = String(session.sessionId);
     assert(session.currentModeId === "bypassPermissions", "approve-all 初始模式应映射为 bypassPermissions");
     assert(session.configOptions?.[0]?.value === "ha-ego", "session/new 应采用请求的编排模式");
-    assert(session.models?.currentModelId === "dashscope-anthropic/qwen3.6-plus", "session/new 应返回当前模型");
+    assert(typeof session.models?.currentModelId === "string" && session.models.currentModelId.length > 0, "session/new 应返回 Pi 当前模型");
+    assert(Array.isArray(session.models?.availableModels), "session/new 应返回 Pi 可用模型列表");
+    assert(
+      session.models.availableModels.some((model: { id?: string }) => model.id === session.models.currentModelId),
+      "Pi 当前模型应包含在可用模型列表中",
+    );
+    assert(
+      session.metadata?.modelConfig?.roleModels?.superego?.source === "pi_default" &&
+        session.metadata.modelConfig.roleModels.superego.requestedModelId === undefined,
+      "Superego 未配置时应直接使用 Pi 默认模型",
+    );
+    const selectedModel = await client.request("session/set_model", { sessionId, modelId: session.models.currentModelId });
+    assert(selectedModel.models?.currentModelId === session.models.currentModelId, "session/set_model 应保存用户选择的模型");
+    assert(
+      selectedModel.metadata?.modelConfig?.roleModels?.ha?.requestedModelId === session.models.currentModelId &&
+        selectedModel.metadata.modelConfig.roleModels.ha.source === "session_selection",
+      "AionUI 模型选择应只作为 HA 用户代理验收模型",
+    );
+    assert(
+      selectedModel.metadata?.modelConfig?.roleModels?.ego?.requestedModelId === undefined &&
+        selectedModel.metadata?.modelConfig?.roleModels?.superego?.requestedModelId === undefined,
+      "AionUI 模型选择不应覆盖 Ego 或 Superego 模型",
+    );
 
     await client.waitForNotification((msg) => hasSessionUpdate(msg, sessionId, "available_commands_update"), "available_commands_update");
     assert(
@@ -220,10 +242,75 @@ async function autonomyStorageSmoke(): Promise<void> {
   const { MasStore } = await import("../src/storage.js");
   const { recordRunEntropy } = await import("../src/core/entropy.js");
   const { AutonomyLoop } = await import("../src/core/autonomy.js");
+  const { ContextPerturbationController } = await import("../src/core/context-perturbation.js");
+  const { buildRecentActivitySummary } = await import("../src/core/activity.js");
+  const { buildEgoPrompt, buildHaDecisionPrompt, buildHaFinalReviewPrompt, buildSuperegoPrompt } = await import("../src/core/prompts.js");
+  const { isReadOnlyTool } = await import("../src/pi/pi-sdk.js");
   const store = new MasStore();
+  const perturbations = new ContextPerturbationController(store);
   const autonomyWorkspace = join(tempRoot, "autonomy-workspace");
   mkdirSync(autonomyWorkspace, { recursive: true });
   try {
+    const haPerturbation = perturbations.createCandidate({
+      runId: "e2e-perturb-ha",
+      targetRole: "ha",
+      trigger: "intent_check",
+      sourceRefs: ["e2e:user_task"],
+    });
+    const egoPerturbation = perturbations.createCandidate({
+      runId: "e2e-perturb-ego",
+      targetRole: "ego",
+      trigger: "execution_plan",
+      sourceRefs: ["e2e:contract"],
+    });
+    const superegoPerturbation = perturbations.createCandidate({
+      runId: "e2e-perturb-superego",
+      targetRole: "superego",
+      trigger: "review_sampling",
+      sourceRefs: ["e2e:audit_packet"],
+    });
+    assert(haPerturbation?.payload && typeof haPerturbation.payload === "object", "HA 普通路由应生成低风险上下文扰动");
+    assert(egoPerturbation?.payload && typeof egoPerturbation.payload === "object", "Ego 首轮执行应生成低风险上下文扰动");
+    assert(superegoPerturbation?.payload && typeof superegoPerturbation.payload === "object", "Superego 普通评审应生成低风险上下文扰动");
+    assert(typeof (egoPerturbation.payload as { seed?: unknown }).seed === "string", "扰动 payload 应记录可复现 seed");
+    assert(perturbations.render(egoPerturbation).includes("<context_perturbation"), "扰动应渲染为隔离 context_perturbation 数据块");
+
+    store.createRun({ runId: "e2e-recent-activity-run", sessionId: "e2e-session", cwd: autonomyWorkspace, prompt: "E2E Ego recent activity" });
+    store.addAgentRun({
+      runId: "e2e-recent-activity-run",
+      role: "ego",
+      iteration: 1,
+      status: "completed",
+      input: { e2e: true },
+      output: { result: { summary: "Ego 最近完成了 E2E 近期活动摘要验证" } },
+    });
+    store.updateRun("e2e-recent-activity-run", "completed", { result: "ok" });
+    const recentActivity = buildRecentActivitySummary(store, { sessionId: "e2e-session", limit: 5 });
+    assert(recentActivity.rendered.includes("Ego 最近完成了 E2E"), "近期活动摘要应包含 Ego 最近执行事实");
+    assert(recentActivity.recentRoles.includes("ego"), "近期活动摘要应记录最近出现过 Ego");
+    assert(buildHaDecisionPrompt("E2E 最近在做什么").includes("mas_query_recent_activity"), "HA prompt 应要求状态问题使用近期活动查询工具");
+    assert(buildHaDecisionPrompt("查询第三方库当前版本").includes("mas_external_search"), "HA prompt 应说明外部检索工具");
+    assert(
+      buildHaFinalReviewPrompt("E2E", "验收合同", "{}", undefined).includes("ha_final_review"),
+      "HA 终验 prompt 应要求调用 ha_final_review 工具",
+    );
+    assert(
+      buildHaFinalReviewPrompt("E2E", "验收合同", "{}", undefined).includes("mas_external_search"),
+      "HA 终验 prompt 应允许使用外部检索工具做交叉验证",
+    );
+    assert(buildEgoPrompt("E2E", "验收合同").includes("mas_query_memory"), "Ego prompt 应说明历史经验查询工具");
+    assert(
+      buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("mas_query_recent_activity"),
+      "Superego prompt 应说明近期活动查询工具",
+    );
+    assert(
+      !buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("mas_external_search"),
+      "Superego prompt 不应暴露 HA 专属外部检索工具",
+    );
+    assert(isReadOnlyTool("mas_query_memory"), "历史经验查询工具应被权限层识别为只读");
+    assert(isReadOnlyTool("mas_query_recent_activity"), "近期活动查询工具应被权限层识别为只读");
+    assert(isReadOnlyTool("mas_external_search"), "外部检索工具应被权限层识别为只读");
+
     const now = new Date(Date.now() - 1000).toISOString();
     const reflectionId = store.addReflectionTask({
       reflectionId: "e2e-reflection-due",

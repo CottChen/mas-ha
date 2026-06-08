@@ -1,13 +1,13 @@
 # MAS 自主性设计记录
 
-本文记录 MAS 自主性机制的设计讨论和当前最小闭环实现。
+本文记录 MAS 自主性机制的设计、当前系统化实现和后续演进方向。系统定位、角色边界、模型策略和工具分工的权威说明见 `docs/ARCHITECTURE.md`。
 
-## 角色边界
+## 自主性边界
 
-- HA 是人类助理层，只负责面向用户接收任务、解释结果和澄清需求，不参与后台反思、定时唤醒或梦境裁剪。
-- Ego 是执行层，负责完成任务、产生执行过程和结果证据，并把任务过程写入经验图。
-- Superego 是评估层，负责验收任务、生成未来反思意图、控制反思预算并取消无价值反思。
-- Id / Dream 是低权限生成层，用于在低规约状态下重组经验图、裁剪低价值节点和抽象长期经验。
+- HA / Ego / Superego 的主任务编排会产出任务、执行过程、审计证据和验收结果。
+- 自主性机制只消费这些产物，负责 Experience Graph、低熵信号、反思、Dream、候选晋升和后续调度。
+- 后台自主性机制不直接向用户交付任务结果，不绕过权限策略，不写用户工作区。
+- Dream 是低权限生成层，只允许重组 Experience Graph、裁剪低价值节点和抽象长期经验。
 
 ## Experience Graph
 
@@ -95,14 +95,14 @@ mas autonomy status
 
 1. 尝试 claim 全局 scheduler lease。
 2. 原子 claim 到期 reflection 任务，将 `scheduled` 改为 `running`。
-3. 处理 reflection 任务并写入 Experience Graph。
-4. 触发 Dream/Prune 裁剪预算耗尽的任务。
+3. 处理 reflection、dream、prune、consolidation 或 goal_continuation job，并写入 Experience Graph、audit 和 events。
+4. 触发 Dream/Prune 裁剪预算耗尽或低价值的任务。
 5. 写入审计日志和 heartbeat。
 
-`reflection_tasks` 已使用 claim 模式，避免多个调度源重复处理同一到期任务。后续会把 `reflection_tasks` 泛化为统一的 `autonomy_jobs`：
+统一调度事实表是 `autonomy_jobs`，`reflection_tasks` / `mas reflect due` / `mas reflect dream` 保留为兼容入口和历史视图：
 
 ```text
-reflection | dream | prune | consolidation
+reflection | dream | prune | consolidation | goal_continuation
 ```
 
 ## 自主任务产物
@@ -153,15 +153,15 @@ MemoryArtifact {
 - Prune 控制复杂度，软删除低价值节点或降低边权。
 - Consolidation 把多次重复验证的经验固化为规则、文档候选或测试候选。
 
-## 最小闭环
+## 当前自主闭环
 
-当前实现先打通最小闭环：
+当前实现已经形成可审计的自主改进闭环：
 
-1. 任务结束后，Ego/Superego 结果被写入 Experience Graph。
-2. Superego 生成一个 `reflection_tasks` 记录，包含触发时间和预算。
-3. 全局 Node.js 调度器可以周期性执行 `mas autonomy tick` 等价逻辑。
-4. 到期反思会根据是否有新信号和预算决定完成或取消。
-5. `mas reflect dream` 会裁剪已经耗尽预算的反思任务。
+1. 任务结束后，Ego、Superego 和 HA 终验结果被写入 Experience Graph。
+2. MAS 生成低熵信号、EntropyLedger、EvalCandidate 和必要的 `autonomy_jobs`。
+3. 全局 Node.js 调度器周期性执行 `mas autonomy tick` 等价逻辑，并通过 SQLite lease claim due job。
+4. 到期 job 会根据新信号、预算、风险和目标状态决定完成、取消、重排、裁剪或续跑。
+5. Dream/Prune 会裁剪低价值或预算耗尽的图节点和反思链。
 
 调度入口统一为 `AutonomyLoop.runDueReflections()` 和全局 `mas autonomy daemon`；AionUI cron、系统 cron 和人工命令只作为调试或备用唤醒源，不作为推荐主路径。
 
@@ -184,6 +184,10 @@ mas acp --reflection-scheduler --reflection-interval 60000
 ## Superego 审计包
 
 Superego 不能只依赖 Ego 自报结果。MAS 在 Superego 评审前生成 `AuditPacket`，把系统级证据传给 Superego，并在评审后执行确定性审计门禁。
+
+Superego 本身承担系统审计 Critic/Judge 职责，不再把额外 Critic 作为异常后才追加的默认补丁。主路径是 Superego + AuditPacket + 按需只读工具；是否使用异质模型由 `MAS_SUPEREGO_MODEL` 显式配置决定。HA 在 Superego 之后代表用户做最终交叉验证，AionUI 会话模型选择只影响 HA。
+
+角色异质工具分工和 Tool-MAD 引用见 `docs/ARCHITECTURE.md`。本节只记录 Superego 审计包和自主性机制如何消费审计证据。
 
 当前 `AuditPacket` 包含：
 
@@ -220,7 +224,7 @@ cd C:\Users\Administrator\projects\mas-ha-orchestration
 C:\Users\Administrator\custom\mas-ha-orchestration-acp-gitbash.cmd reflect due
 ```
 
-该命令只唤醒已到期的 `reflection_tasks`；未到期任务保持 `scheduled`，已到期任务会写入 `reflection_completed` 审计记录并更新 `wakeups` 和状态。
+该命令只作为兼容入口唤醒已到期的 reflection 类任务；推荐主入口仍是 `mas autonomy daemon` 或 `mas autonomy tick`。未到期任务保持 `scheduled`，已到期任务会写入审计记录并更新 `wakeups` 和状态。
 
 后续演进方向：
 

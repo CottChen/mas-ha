@@ -200,7 +200,7 @@ function positional(args: string[]): string[] {
 
 function printHelp(): void {
   const modes = orchestrationModeList().map((mode) => `    ${mode.id} - ${mode.description}`).join("\n");
-  console.log(`MAS MVP
+  console.log(`MAS
 
 用法：
   mas acp [--approve-all] [--approval-mode-policy fixed|mutable] [--reflection-scheduler] [--reflection-interval 60000] [--max-iterations 3] [--orchestration-mode ha-ego-superego]
