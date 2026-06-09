@@ -8,7 +8,7 @@ MAS 当前定位为系统化多智能体执行与自主改进系统。当前版�
 - ACP `initialize`、`session/new`、`session/load`、`session/prompt`、`session/cancel`、`session/set_mode`、`session/set_model`、`session/set_config_option` 的基础状态处理。
 - HA / Ego / Superego 和 HA / Ego 两种编排模式。
 - HA 路由、验收合同生成、HA 终验、Ego 执行、Superego 审计评审和返工闭环。
-- HA 专属 `mas_external_search` 外部检索工具，用于引入公开证据候选并支持异质工具交叉验证。
+- HA 专属 `mas_external_search` 外部检索工具和 `mas_external_read` 外部 URL 读取工具，用于引入公开证据候选、核对来源原文并支持异质工具交叉验证。
 - Ego 工作区读写和命令执行工具，写文件、编辑文件和执行命令默认走 ACP 权限审批。
 - Superego `AuditPacket`、确定性审计门禁、边界目录轻量 metadata snapshot/diff、`changed_files` 对账和只读输入边界检查。
 - Pi SDK typed tool 结构化输出、MAS 业务 schema 校验和 repair prompt 兜底。
@@ -20,7 +20,7 @@ MAS 当前定位为系统化多智能体执行与自主改进系统。当前版�
 ## 近期硬化目标
 
 - 工具与证据治理：
-  - 为 `mas_external_search` 增加可插拔 provider 文档化测试，覆盖 DuckDuckGo 后备和自定义 RAG/search endpoint。
+  - 为 `mas_external_search` / `mas_external_read` 增加可插拔 provider 文档化测试，覆盖 MCP、DuckDuckGo 后备、自定义 RAG/search endpoint 和 HTTP 读取 fallback。
   - 记录外部检索结果的 URI、retrievedAt、provider、TTL 和 redaction 状态，并沉淀为 `external_fact` 低熵信号。
   - 让 HA 终验在采用外部检索结果时输出明确来源和交叉验证依据。
 - 评审与验收：
@@ -32,7 +32,7 @@ MAS 当前定位为系统化多智能体执行与自主改进系统。当前版�
   - 扩展 AionUI 端到端 smoke，覆盖权限弹窗、工具流展示和会话恢复。
   - 增加 agent session trace 诊断命令或文档入口，便于定位重复思考、工具不可用和上下文缺失。
 - 测试与质量：
-  - 为 `mas_external_search`、HA 终验、模型选择隔离和只读工具白名单增加单元测试。
+  - 为 `mas_external_search`、`mas_external_read`、HA 终验、模型选择隔离和只读工具白名单增加单元测试。
   - 将 docs 中的关键架构断言纳入轻量文档一致性检查。
   - 保持 `npm run typecheck`、`npm run doctor`、`npm run e2e:smoke` 作为合并前最低验证。
 

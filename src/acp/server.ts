@@ -9,6 +9,7 @@ import { discoverSkills } from "../core/skills.js";
 import { getPiBackendModelSummary } from "../pi/pi-sdk.js";
 import { MasStore } from "../storage.js";
 import type { ApprovalMode, ApprovalModePolicy, ConversationContext, OrchestrationMode, SkillSummary } from "../types.js";
+import type { PiBackendModelSummary, PiRoleModelSummary } from "../pi/pi-sdk.js";
 
 type SessionState = {
   sessionId: string;
@@ -79,7 +80,7 @@ export function startAcpServer(options: AcpServerOptions): void {
     const skills = await safeDiscoverSkills(cwd);
     const selectedModel = extractModelId(params);
     sessions.set(sessionId, { sessionId, cwd, approvalMode, orchestrationMode, context: { summary: "", turns: [] }, skills, selectedModel });
-    queueSessionUpdates(peer, sessionId, { summary: "", turns: [] }, skills, approvalMode, orchestrationMode);
+    queueSessionUpdates(peer, sessionId, { summary: "", turns: [] }, skills, approvalMode, orchestrationMode, cwd, selectedModel);
     return sessionResponse(sessionId, cwd, approvalMode, orchestrationMode, skills, selectedModel);
   });
 
@@ -100,7 +101,7 @@ export function startAcpServer(options: AcpServerOptions): void {
       skills,
       selectedModel,
     });
-    queueSessionUpdates(peer, sessionId, context, skills, approvalMode, orchestrationMode);
+    queueSessionUpdates(peer, sessionId, context, skills, approvalMode, orchestrationMode, cwd, selectedModel);
     return sessionResponse(sessionId, cwd, approvalMode, orchestrationMode, skills, selectedModel);
   });
 
@@ -390,12 +391,49 @@ function queueSessionUpdates(
   skills: SkillSummary[],
   approvalMode: ApprovalMode,
   orchestrationMode: OrchestrationMode,
+  cwd: string,
+  selectedModel?: string,
 ): void {
   setTimeout(() => {
-    queueConfigUpdate(peer, sessionId, approvalMode);
-    queueAvailableCommands(peer, sessionId, skills);
-    replayHistory(peer, sessionId, context);
+    void (async () => {
+      queueConfigUpdate(peer, sessionId, approvalMode);
+      queueAvailableCommands(peer, sessionId, skills);
+      await queueRoleModelSummary(peer, sessionId, cwd, selectedModel);
+      replayHistory(peer, sessionId, context);
+    })();
   }, 0);
+}
+
+async function queueRoleModelSummary(peer: JsonRpcPeer, sessionId: string, cwd: string, selectedModel?: string): Promise<void> {
+  const summary = await getPiBackendModelSummary(cwd, selectedModel);
+  peer.notify("session/update", {
+    sessionId,
+    update: {
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: renderRoleModelSummary(summary, selectedModel) },
+    },
+  });
+}
+
+function renderRoleModelSummary(summary: PiBackendModelSummary, selectedModel?: string): string {
+  const roleModels = summary.roleModels ?? {};
+  const lines = ["MAS 角色模型配置："];
+  lines.push(`- Pi 默认模型：${summary.currentModelId ?? "未解析"}`);
+  if (selectedModel) lines.push(`- AionUI 当前选择：${selectedModel}（仅作用于 HA，除非 MAS_HA_MODEL 显式覆盖）`);
+  lines.push(formatRoleModelLine("HA", roleModels.ha));
+  lines.push(formatRoleModelLine("Ego", roleModels.ego));
+  lines.push(formatRoleModelLine("Superego", roleModels.superego));
+  if (summary.warning) lines.push(`- 警告：${summary.warning}`);
+  return `${lines.filter(Boolean).join("\n")}\n`;
+}
+
+function formatRoleModelLine(label: string, model: PiRoleModelSummary | undefined): string {
+  if (!model) return `- ${label}：未解析`;
+  const requested = model.requestedModelId ? `requested=${model.requestedModelId}` : "requested=未配置";
+  const resolved = model.resolvedModelId ? `resolved=${model.resolvedModelId}` : "resolved=Pi 默认/未解析";
+  const thinking = model.thinkingLevel ? `thinking=${model.thinkingLevel}` : "thinking=默认";
+  const warning = model.warning ? `；warning=${model.warning}` : "";
+  return `- ${label}：${resolved}；source=${model.source}；${requested}；${thinking}；heterogeneity=${model.heterogeneity}${warning}`;
 }
 
 function queueConfigUpdate(peer: JsonRpcPeer, sessionId: string, approvalMode: ApprovalMode): void {

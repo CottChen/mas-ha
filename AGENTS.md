@@ -145,8 +145,9 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - Experience Graph 是 MAS 长期自主性的核心记忆结构，应串联任务、执行过程、结果、经验、反思和 Dream 裁剪；反思可以递归，但必须受能量预算、拓扑约束和审计约束控制。
 - MAS 自主性调度必须跨会话、全局单实例运行；推荐入口是 `mas autonomy daemon`，通过 SQLite scheduler lease 和任务 claim 避免多个 AionUI 会话重复处理同一任务。
 - Superego 评审必须基于 Ego 自报和 MAS 系统审计证据共同判断；`AuditPacket` 中的工具调用、审批、写入路径和 `changed_files` 对账结果优先级高于 Ego 自报。
-- HA 负责代表用户做最终验收和交叉验证；AionUI 会话模型选择只作用于 HA，用于形成用户代理视角的异质 Critic。Ego 和 Superego 未显式配置角色模型时直接使用 Pi 默认模型。
-- HA 拥有 `mas_external_search` 只读外部检索工具，用于引入公开证据候选并跳出 MAS 内部固定吸引子；Ego 不应获得外部检索工具，避免执行层扩大任务边界。
+- HA 负责代表用户做最终验收和交叉验证；终验阶段可以使用工作区只读工具和自动授权 `bash` 做独立抽样复算，空摘要、`quality_score=0` 或 `evidenceQuality=0` 的 accept 必须被门禁拦截。AionUI 会话模型选择只作用于 HA，用于形成用户代理视角的异质 Critic。Ego 和 Superego 未显式配置角色模型时直接使用 Pi 默认模型。
+- HA 拥有 `mas_external_search` 只读外部检索工具和 `mas_external_read` 只读外部 URL 读取工具，用于引入公开证据候选并核对来源原文；Ego 不应获得 MAS 记忆、近期活动、外部检索或外部读取工具，避免执行层扩大任务边界。
+- Superego 拥有工作区只读工具和自动授权 `bash`，用于系统审计和只读抽样复算；`bash` 只允许用于只读验证，不允许执行有副作用的命令，所有调用仍进入审计记录。
 - Superego 本身是系统审计视角的 Critic/Judge；如需异质强模型必须通过 `MAS_SUPEREGO_MODEL` 显式配置，未配置时不探测其他模型，直接回退 Pi 默认模型。
 - Superego 默认验收策略是当前状态门禁 + 历史事实留痕：当前仍存在的 `output` 目录外写入、只读输入路径写入或失败验证伪装为成功时必须阻塞；历史已清理的越界写入和 `changed_files` 漏报必须留痕，但不单独作为永久阻塞。
 - Superego 抽样复核应采用分层风险抽样 + 少量随机扰动；snapshot/diff 只能做边界目录轻量元数据 diff + 风险触发深查，不能默认全量重审计。

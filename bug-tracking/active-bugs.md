@@ -129,6 +129,7 @@
 - 优先实现 thought 流限流和展示分段：按 role/iteration 增加阶段前缀，并对连续重复片段或超长 thought 做折叠。
 - 增加非敏感 thought telemetry：只记录长度、hash、contentIndex、block 序号和是否疑似重复，不落库原始思考文本。
 - 如需保持 AionUI 思考区轻量，可默认只发送阶段提示，不逐 token 转发全部 `thinking_delta`。
+- 2026-06-09 在 `custom-temp-1781002066855` 复查到 MAS 只创建了一次 Ego 第 1 轮；已做局部缓解：固定编排阶段提示改走普通消息流，文本通道中的显式 `<think>...</think>` 片段改归入 thought 流。仍需真实 AionUI 复测和 thought telemetry 才能关闭。
 
 复测要求：
 

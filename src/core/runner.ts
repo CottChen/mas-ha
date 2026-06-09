@@ -33,6 +33,10 @@ import {
   parseHaDecision,
 } from "./prompts.js";
 
+function emitStage(sink: StreamSink, text: string): void {
+  sink.text(`\n\n${text}\n`);
+}
+
 export class MasRunner {
   constructor(
     private readonly store = new MasStore(),
@@ -104,18 +108,19 @@ export class MasRunner {
       }
 
       const contract = haDecision.acceptance_contract.trim() || buildAcceptanceContract(task);
-      sink.thought(`HA 已创建验收合同。编排模式：${mode.name}。\n${contract}\n`);
+      emitStage(sink, `HA 已创建验收合同。编排模式：${mode.name}。`);
       const boundarySnapshot: BoundarySnapshot = createBoundarySnapshot({ cwd: options.cwd, task, contract });
       this.store.audit({ runId, actor: "system", action: "boundary_snapshot_baseline", payload: summarizeBoundarySnapshot(boundarySnapshot) });
 
       for (let iteration = 1; iteration <= options.maxIterations; iteration++) {
         throwIfAborted(options.signal);
-        sink.thought(`\nEgo 第 ${iteration} 轮开始。\n`);
+        emitStage(sink, `Ego 第 ${iteration} 轮开始。`);
         const ego = await createPiSession({
           cwd: options.cwd,
           runId,
           sessionId,
           role: "ego",
+          phase: "execute",
           iteration,
           approvalMode: options.approvalMode,
           sink,
@@ -172,7 +177,7 @@ export class MasRunner {
 
         if (!mode.usesSuperego) {
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, undefined, options, sink, runId, sessionId, iteration, contextInjection);
-          sink.thought(`\nHA 终验结论：${haFinalReview.summary || haFinalReview.next_action}\n`);
+          emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
           if (haFinalReview.next_action === "accept" && haFinalReview.blocking_issues === 0) {
             const result = `HA 终验通过（${mode.name} 模式，未启用 Superego 评审）。\n\n${finalEgoOutput}`;
             this.store.updateRun(runId, "completed", { result, egoResult, haFinalReview, orchestrationMode: mode.id });
@@ -189,7 +194,11 @@ export class MasRunner {
             return { runId, result };
           }
           if (haFinalReview.next_action === "escalate") {
-            const result = `HA 终验未通过：需要人工介入。\n\n最后批注：${JSON.stringify(haFinalReview, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
+            const result = formatNeedsAttentionResult({
+              headline: "HA 终验未通过：需要人工介入。",
+              haFinalReview,
+              egoOutput: finalEgoOutput,
+            });
             this.store.updateRun(runId, "needs_attention", { result, egoResult, haFinalReview, orchestrationMode: mode.id });
             this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique: haFinalReview, reason: "ha_final_escalate" });
             sink.done(result);
@@ -200,14 +209,15 @@ export class MasRunner {
         }
 
         throwIfAborted(options.signal);
-        sink.thought(`\nSuperego 第 ${iteration} 轮评审开始。\n`);
+        emitStage(sink, `Superego 第 ${iteration} 轮评审开始。`);
         const superego = await createPiSession({
           cwd: options.cwd,
           runId,
           sessionId,
           role: "superego",
+          phase: "review",
           iteration,
-          approvalMode: "deny-writes",
+          approvalMode: options.approvalMode,
           sink,
           recordApproval: (input) => this.store.addApproval({ runId, ...input }),
           recordEvent: (input) => this.store.addEvent(input),
@@ -256,9 +266,13 @@ export class MasRunner {
           superego.dispose();
         }
 
-        sink.thought(`\nSuperego 结论：${critique.summary || critique.next_action}\n`);
+        emitStage(sink, `Superego 结论：${critique.summary || critique.next_action}`);
         if (critique.next_action === "escalate") {
-          const result = `HA 终验未通过：Superego 要求人工介入。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
+          const result = formatNeedsAttentionResult({
+            headline: "HA 终验未通过：Superego 要求人工介入。",
+            superegoReview: critique,
+            egoOutput: finalEgoOutput,
+          });
           this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
           this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique, reason: "superego_escalate" });
           sink.done(result);
@@ -266,9 +280,14 @@ export class MasRunner {
         }
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection);
-          sink.thought(`\nHA 终验结论：${haFinalReview.summary || haFinalReview.next_action}\n`);
+          emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
           if (haFinalReview.next_action === "escalate") {
-            const result = `HA 终验未通过：需要人工介入。\n\nHA 终验批注：${JSON.stringify(haFinalReview, null, 2)}\n\nSuperego 批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
+            const result = formatNeedsAttentionResult({
+              headline: "HA 终验未通过：需要人工介入。",
+              haFinalReview,
+              superegoReview: critique,
+              egoOutput: finalEgoOutput,
+            });
             this.store.updateRun(runId, "needs_attention", { result, critique, egoResult, haFinalReview });
             this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique: haFinalReview, reason: "ha_final_escalate" });
             sink.done(result);
@@ -294,7 +313,11 @@ export class MasRunner {
         }
       }
 
-      const result = `HA 终验未通过：达到最大返工轮次。\n\n最后批注：${JSON.stringify(critique, null, 2)}\n\n最后 Ego 输出：\n${finalEgoOutput}`;
+      const result = formatNeedsAttentionResult({
+        headline: "HA 终验未通过：达到最大返工轮次。",
+        superegoReview: critique,
+        egoOutput: finalEgoOutput,
+      });
       this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
       this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique, reason: "max_iterations" });
       this.store.addEvent({
@@ -430,7 +453,7 @@ export class MasRunner {
     iteration: number,
   ): Promise<CritiqueResult> {
     try {
-      return this.parseStructuredOutput("superego_review", rawOutput, superego, parseCritique, "Superego");
+      return this.parseStructuredOutput("superego_review", rawOutput, superego, (text) => parseCritique(text, "Superego"), "Superego");
     } catch (error) {
       const firstError = error instanceof Error ? error : new Error(String(error));
       this.store.addAgentRun({
@@ -445,7 +468,7 @@ export class MasRunner {
       superego.clearStructuredOutput("superego_review");
       const repairText = await superego.prompt(buildSuperegoRepairPrompt(rawOutput, firstError.message));
       try {
-        return this.parseStructuredOutput("superego_review", repairText, superego, parseCritique, "Superego");
+        return this.parseStructuredOutput("superego_review", repairText, superego, (text) => parseCritique(text, "Superego"), "Superego");
       } catch (repairError) {
         const err = repairError instanceof Error ? repairError : new Error(String(repairError));
         this.store.addAgentRun({
@@ -484,7 +507,7 @@ export class MasRunner {
     iteration: number,
   ): Promise<CritiqueResult> {
     try {
-      return this.parseStructuredOutput("ha_final_review", rawOutput, ha, parseCritique, "HA 终验");
+      return this.parseStructuredOutput("ha_final_review", rawOutput, ha, (text) => parseCritique(text, "HA 终验"), "HA 终验");
     } catch (error) {
       const firstError = error instanceof Error ? error : new Error(String(error));
       this.store.addAgentRun({
@@ -499,7 +522,7 @@ export class MasRunner {
       ha.clearStructuredOutput("ha_final_review");
       const repairText = await ha.prompt(buildHaFinalReviewRepairPrompt(rawOutput, firstError.message));
       try {
-        return this.parseStructuredOutput("ha_final_review", repairText, ha, parseCritique, "HA 终验");
+        return this.parseStructuredOutput("ha_final_review", repairText, ha, (text) => parseCritique(text, "HA 终验"), "HA 终验");
       } catch (repairError) {
         const err = repairError instanceof Error ? repairError : new Error(String(repairError));
         this.store.addAgentRun({
@@ -559,15 +582,17 @@ export class MasRunner {
   ): Promise<HaDecision> {
     throwIfAborted(options.signal);
     this.store.audit({ runId, actor: "ha", action: "route_started", payload: { orchestrationMode: mode.id } });
+    emitStage(sink, "HA 路由开始。");
     const ha = await createPiSession({
       cwd: options.cwd,
       runId,
       sessionId,
       role: "ha",
+      phase: "route",
       iteration: 0,
       approvalMode: "deny-writes",
       model: options.model,
-      sink: new InternalSink(sink),
+      sink,
       recordApproval: (input) => this.store.addApproval({ runId, ...input }),
       recordEvent: (input) => this.store.addEvent(input),
       memoryTools: this.createMemoryToolProvider(sessionId),
@@ -668,15 +693,17 @@ export class MasRunner {
   ): Promise<CritiqueResult> {
     throwIfAborted(options.signal);
     this.store.audit({ runId, actor: "ha", action: "final_review_started", payload: { iteration, hasSuperego: Boolean(superegoCritique) } });
+    emitStage(sink, "HA 终验开始。");
     const ha = await createPiSession({
       cwd: options.cwd,
       runId,
       sessionId,
       role: "ha",
+      phase: "final_review",
       iteration,
       approvalMode: "deny-writes",
       model: options.model,
-      sink: new InternalSink(sink),
+      sink,
       recordApproval: (input) => this.store.addApproval({ runId, ...input }),
       recordEvent: (input) => this.store.addEvent(input),
       memoryTools: this.createMemoryToolProvider(sessionId),
@@ -697,7 +724,7 @@ export class MasRunner {
       const reviewText = await ha.prompt(
         buildHaFinalReviewPrompt(task, contract, JSON.stringify(egoResult, null, 2), superegoCritique, this.perturbations.render(perturbation)),
       );
-      const review = await this.parseHaFinalReviewWithRepair(reviewText, ha, prompt, task, contract, runId, iteration);
+      const review = enforceHaFinalReviewGate(await this.parseHaFinalReviewWithRepair(reviewText, ha, prompt, task, contract, runId, iteration));
       this.store.addAgentRun({
         runId,
         role: "ha",
@@ -783,6 +810,78 @@ export class MasRunner {
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error("MAS run 已取消");
+}
+
+export function enforceHaFinalReviewGate(review: CritiqueResult): CritiqueResult {
+  if (review.next_action !== "accept") return review;
+  const evidenceQuality = review.evidenceQuality ?? 0;
+  const hasSummary = review.summary.trim().length > 0;
+  if (review.quality_score > 0 && evidenceQuality > 0 && hasSummary) return review;
+  return {
+    ...review,
+    blocking_issues: Math.max(review.blocking_issues, 1),
+    quality_score: Math.min(review.quality_score, 0.2),
+    summary: hasSummary ? review.summary : "HA 终验未提供有效摘要或独立验收证据，不能接受空壳 accept。",
+    next_action: "escalate",
+    evidenceQuality,
+    remainingUncertainty: Math.max(review.remainingUncertainty ?? 0, 0.8),
+    nextBestObservation: review.nextBestObservation?.trim() || "重新执行 HA 终验：使用只读本地检查、必要的只读 Python 复算或外部证据核对后，再提交 ha_final_review。",
+    critique_items: [
+      ...review.critique_items,
+      {
+        category: "ha_final_review_gate",
+        severity: "high",
+        suggestion: "HA 终验 accept 必须包含非空摘要、正向质量评分和正向证据质量；空壳 accept 应升级人工或返工。",
+      },
+    ],
+  };
+}
+
+export function formatNeedsAttentionResult(input: {
+  headline: string;
+  haFinalReview?: CritiqueResult;
+  superegoReview?: CritiqueResult;
+  egoOutput?: string;
+}): string {
+  const sections = [input.headline.trim()];
+  if (input.haFinalReview) sections.push(formatCritiqueForUser("HA 终验批注", input.haFinalReview));
+  if (input.superegoReview) sections.push(formatCritiqueForUser("Superego 批注", input.superegoReview));
+  const egoOutput = input.egoOutput?.trim();
+  if (egoOutput) sections.push(`最后 Ego 输出：\n${egoOutput}`);
+  return sections.filter(Boolean).join("\n\n");
+}
+
+function formatCritiqueForUser(title: string, critique: CritiqueResult): string {
+  const lines = [
+    `${title}：`,
+    `- 结论：${formatAction(critique.next_action)}`,
+    `- 阻塞问题：${critique.blocking_issues}`,
+    `- 质量分：${formatScore(critique.quality_score)}`,
+    `- 证据质量：${formatScore(critique.evidenceQuality)}`,
+    `- 剩余不确定性：${formatScore(critique.remainingUncertainty)}`,
+    `- 摘要：${cleanReviewText(critique.summary) || "未提供有效摘要"}`,
+  ];
+  const nextBestObservation = cleanReviewText(critique.nextBestObservation);
+  if (nextBestObservation) lines.push(`- 下一步观察：${nextBestObservation}`);
+  critique.critique_items.slice(0, 8).forEach((item, index) => {
+    lines.push(`- 批注 ${index + 1} [${item.severity}/${item.category}]：${cleanReviewText(item.suggestion) || "未提供建议"}`);
+  });
+  if (critique.critique_items.length > 8) lines.push(`- 其余批注：${critique.critique_items.length - 8} 条已省略`);
+  return lines.join("\n");
+}
+
+function formatAction(action: CritiqueResult["next_action"]): string {
+  if (action === "accept") return "通过";
+  if (action === "revise") return "需要返工";
+  return "需要人工介入";
+}
+
+function formatScore(score: number | undefined): string {
+  return typeof score === "number" && Number.isFinite(score) ? String(score) : "未提供";
+}
+
+function cleanReviewText(text: string | undefined): string {
+  return (text ?? "").replace(/\s+/g, " ").trim();
 }
 
 function buildTaskWithConversation(
@@ -884,26 +983,4 @@ function summarizeBoundarySnapshot(snapshot: BoundarySnapshot): unknown {
       truncated: scope.truncated,
     })),
   };
-}
-
-class InternalSink implements StreamSink {
-  constructor(private readonly delegate: StreamSink) {}
-
-  text(): void {}
-
-  thought(): void {}
-
-  toolStart(): void {}
-
-  toolUpdate(): void {}
-
-  permission(input: Parameters<StreamSink["permission"]>[0]): Promise<Awaited<ReturnType<StreamSink["permission"]>>> {
-    return this.delegate.permission(input);
-  }
-
-  done(): void {}
-
-  error(error: Error): void {
-    this.delegate.error(error);
-  }
 }

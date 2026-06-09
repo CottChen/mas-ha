@@ -30,6 +30,7 @@ export interface PiSessionOptions {
   runId: string;
   sessionId?: string;
   role: RoleName;
+  phase?: "route" | "execute" | "review" | "final_review";
   iteration: number;
   approvalMode: ApprovalMode;
   model?: string;
@@ -42,6 +43,28 @@ export interface PiSessionOptions {
 export interface MasMemoryTools {
   queryMemory: (input: { query: string; limit?: number }) => unknown;
   queryRecentActivity: (input: { scope?: "current_session" | "global" | "all"; role?: string; limit?: number }) => unknown;
+}
+
+export function roleToolNames(role: RoleName, phase?: PiSessionOptions["phase"]): string[] {
+  if (role === "ha" && phase === "final_review") {
+    return [
+      "mas_query_memory",
+      "mas_query_recent_activity",
+      "mas_external_search",
+      "mas_external_read",
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash",
+      "ha_final_review",
+    ];
+  }
+  if (role === "ha") {
+    return ["mas_query_memory", "mas_query_recent_activity", "mas_external_search", "mas_external_read", "read", "grep", "find", "ls", "bash", "ha_decision"];
+  }
+  if (role === "ego") return ["read", "grep", "find", "ls", "write", "edit", "bash", "ego_result"];
+  return ["mas_query_memory", "mas_query_recent_activity", "read", "grep", "find", "ls", "bash", "superego_review"];
 }
 
 export interface PiSessionHandle {
@@ -143,12 +166,7 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
 
   const { session } = await pi.createAgentSession({
     cwd: options.cwd,
-    tools:
-      options.role === "ha"
-        ? ["mas_query_memory", "mas_query_recent_activity", "mas_external_search", "ha_decision", "ha_final_review"]
-        : options.role === "ego"
-        ? ["mas_query_memory", "mas_query_recent_activity", "read", "grep", "find", "ls", "write", "edit", "bash", "ego_result"]
-        : ["mas_query_memory", "mas_query_recent_activity", "read", "grep", "find", "ls", "superego_review"],
+    tools: roleToolNames(options.role, options.phase),
     customTools,
     authStorage,
     modelRegistry,
@@ -160,6 +178,15 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
   });
 
   let text = "";
+  const literalThinkRouter = createLiteralThinkRouter({
+    onText: (delta) => {
+      text += delta;
+      options.sink.text(delta);
+    },
+    onThought: (delta) => {
+      options.sink.thought(delta);
+    },
+  });
   recordMasEvent(options, "mas.agent_session.created", {
     cwd: options.cwd,
     approvalMode: options.approvalMode,
@@ -173,8 +200,7 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     if (event.type === "message_update") {
       const update = event.assistantMessageEvent;
       if (update?.type === "text_delta" && typeof update.delta === "string") {
-        text += update.delta;
-        options.sink.text(update.delta);
+        literalThinkRouter.write(update.delta);
       }
       if (update?.type === "thinking_delta" && typeof update.delta === "string") {
         options.sink.thought(update.delta);
@@ -182,12 +208,12 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     }
     if (event.type === "tool_execution_start") {
       if (isInternalTool(String(event.toolName ?? ""))) return;
-      options.sink.toolStart(toToolEvent(event.toolCallId, event.toolName, event.args));
+      options.sink.toolStart(toToolEvent(event.toolCallId, event.toolName, event.args, options.role));
     }
     if (event.type === "tool_execution_update") {
       if (isInternalTool(String(event.toolName ?? ""))) return;
       options.sink.toolUpdate({
-        ...toToolEvent(event.toolCallId, event.toolName, event.args),
+        ...toToolEvent(event.toolCallId, event.toolName, event.args, options.role),
         status: "in_progress",
         content: [textToolContent(String(event.partialResult ?? ""))],
       });
@@ -195,7 +221,7 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     if (event.type === "tool_execution_end") {
       if (isInternalTool(String(event.toolName ?? ""))) return;
       options.sink.toolUpdate({
-        ...toToolEvent(event.toolCallId, event.toolName, event.args),
+        ...toToolEvent(event.toolCallId, event.toolName, event.args, options.role),
         status: event.isError ? "failed" : "completed",
         content: [textToolContent(stringifyToolResult(event.result))],
       });
@@ -204,8 +230,10 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
   return {
     async prompt(promptText: string) {
       text = "";
+      literalThinkRouter.reset();
       recordMasEvent(options, "mas.agent_prompt.started", { promptChars: promptText.length });
       await session.prompt(promptText);
+      literalThinkRouter.flush();
       recordMasEvent(options, "mas.agent_prompt.completed", { outputChars: text.length });
       return text;
     },
@@ -230,6 +258,97 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
       capturedStructuredOutputs.delete(toolName);
     },
   };
+}
+
+interface LiteralThinkRouter {
+  write(delta: string): void;
+  flush(): void;
+  reset(): void;
+}
+
+export function routeLiteralThinkTextDeltasForTest(chunks: string[]): { text: string; thought: string } {
+  let text = "";
+  let thought = "";
+  const router = createLiteralThinkRouter({
+    onText: (delta) => {
+      text += delta;
+    },
+    onThought: (delta) => {
+      thought += delta;
+    },
+  });
+  for (const chunk of chunks) router.write(chunk);
+  router.flush();
+  return { text, thought };
+}
+
+function createLiteralThinkRouter(handlers: { onText: (delta: string) => void; onThought: (delta: string) => void }): LiteralThinkRouter {
+  const openTag = "<think>";
+  const closeTag = "</think>";
+  let buffer = "";
+  let inThink = false;
+
+  const emit = (delta: string): void => {
+    if (!delta) return;
+    if (inThink) handlers.onThought(delta);
+    else handlers.onText(delta);
+  };
+
+  const drain = (flush: boolean): void => {
+    while (buffer) {
+      const lower = buffer.toLowerCase();
+      if (inThink) {
+        const closeIndex = lower.indexOf(closeTag);
+        if (closeIndex >= 0) {
+          handlers.onThought(buffer.slice(0, closeIndex));
+          buffer = buffer.slice(closeIndex + closeTag.length);
+          inThink = false;
+          continue;
+        }
+        const keep = flush ? 0 : longestTagPrefixSuffix(lower, closeTag);
+        const emitLength = buffer.length - keep;
+        if (emitLength <= 0) break;
+        handlers.onThought(buffer.slice(0, emitLength));
+        buffer = buffer.slice(emitLength);
+        continue;
+      }
+
+      const openIndex = lower.indexOf(openTag);
+      if (openIndex >= 0) {
+        handlers.onText(buffer.slice(0, openIndex));
+        buffer = buffer.slice(openIndex + openTag.length);
+        inThink = true;
+        continue;
+      }
+      const keep = flush ? 0 : longestTagPrefixSuffix(lower, openTag);
+      const emitLength = buffer.length - keep;
+      if (emitLength <= 0) break;
+      emit(buffer.slice(0, emitLength));
+      buffer = buffer.slice(emitLength);
+    }
+  };
+
+  return {
+    write(delta: string) {
+      buffer += delta;
+      drain(false);
+    },
+    flush() {
+      drain(true);
+    },
+    reset() {
+      buffer = "";
+      inThink = false;
+    },
+  };
+}
+
+function longestTagPrefixSuffix(text: string, tag: string): number {
+  const max = Math.min(text.length, tag.length - 1);
+  for (let length = max; length > 0; length--) {
+    if (tag.startsWith(text.slice(-length))) return length;
+  }
+  return 0;
 }
 
 function modelAcpId(model: { provider: string; id: string }): string {
@@ -371,6 +490,17 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
       });
       if (isReadOnlyTool(toolName) || isInternalTool(toolName)) return undefined;
 
+      if (isAutoApprovedReviewTool(options, toolName)) {
+        options.recordApproval({
+          toolCallId: tool.id,
+          toolName,
+          decision: "allow_always",
+          rawInput: event.input,
+        });
+        recordApprovalDecision(options, tool, toolName, "allow_always", true);
+        return undefined;
+      }
+
       if (options.approvalMode === "approve-all") {
         options.recordApproval({
           toolCallId: tool.id,
@@ -409,6 +539,14 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
       return undefined;
     });
   };
+}
+
+export function isAutoApprovedReviewTool(options: Pick<PiSessionOptions, "role" | "phase">, toolName: string): boolean {
+  if (toolName !== "bash") return false;
+  return (
+    (options.role === "ha" && (options.phase === "route" || options.phase === "final_review")) ||
+    (options.role === "superego" && options.phase === "review")
+  );
 }
 
 function recordPiEvent(options: PiSessionOptions, event: any): void {
@@ -493,12 +631,13 @@ export function isReadOnlyTool(toolName: string): boolean {
     toolName === "ls" ||
     toolName === "mas_query_memory" ||
     toolName === "mas_query_recent_activity" ||
-    toolName === "mas_external_search"
+    toolName === "mas_external_search" ||
+    toolName === "mas_external_read"
   );
 }
 
-function isInternalTool(toolName: string): boolean {
-  return toolName === "ha_decision" || toolName === "ego_result" || toolName === "superego_review";
+export function isInternalTool(toolName: string): boolean {
+  return toolName === "ha_decision" || toolName === "ha_final_review" || toolName === "ego_result" || toolName === "superego_review";
 }
 
 type StructuredOutputToolSpec<T> = {
@@ -582,6 +721,7 @@ function createMasMemoryTools(pi: PiModule, options: PiSessionOptions): unknown[
   ];
   if (options.role === "ha") {
     tools.push(createExternalSearchTool(pi, options));
+    tools.push(createExternalReadTool(pi, options));
   }
   return tools;
 }
@@ -618,7 +758,39 @@ function createExternalSearchTool(pi: PiModule, options: PiSessionOptions): unkn
   });
 }
 
-async function runExternalSearch(query: string, limit = 5): Promise<{
+function createExternalReadTool(pi: PiModule, options: PiSessionOptions): unknown {
+  return pi.defineTool({
+    name: "mas_external_read",
+    label: "MAS External Read",
+    description: "只读读取外部 URL 内容，用于在外部搜索后核对候选证据原文。结果不是权威结论，采用前必须交叉验证。",
+    promptSnippet: "读取外部 URL 内容候选",
+    promptGuidelines: [
+      "HA 在 mas_external_search 返回候选结果后，如果需要核对原文、摘要不足或最终验收依赖该来源时使用。",
+      "只读取用户任务相关、搜索结果相关或用户明确给出的公开 URL；不要批量抓取无关链接。",
+      "读取结果只是候选证据；必须结合用户目标、当前仓库证据、Ego 输出和 Superego 结论交叉验证。",
+      "引用读取结果时保留 url、retrievedAt 和 provider；读取失败时明确说明，不得编造。",
+    ],
+    parameters: Type.Object({
+      url: Type.String({ description: "要读取的公开 URL。" }),
+      format: Type.Optional(Type.Union([Type.Literal("markdown"), Type.Literal("json")], { description: "读取格式，默认 markdown。" })),
+    }),
+    async execute(_toolCallId: string, params: { url: string; format?: "markdown" | "json" }) {
+      const result = await runExternalRead(params.url, params.format ?? "markdown");
+      recordMasEvent(options, "mas.external_read.completed", {
+        url: params.url,
+        provider: result.provider,
+        contentChars: result.content.length,
+        warning: result.warning,
+      });
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        details: result,
+      };
+    },
+  });
+}
+
+export async function runExternalSearch(query: string, limit = 5): Promise<{
   query: string;
   provider: string;
   retrievedAt: string;
@@ -627,8 +799,18 @@ async function runExternalSearch(query: string, limit = 5): Promise<{
 }> {
   const normalizedLimit = Math.max(1, Math.min(10, Math.trunc(limit || 5)));
   const retrievedAt = new Date().toISOString();
+  const mcpUrl = process.env.MAS_EXTERNAL_SEARCH_MCP_URL?.trim();
   const endpoint = process.env.MAS_EXTERNAL_SEARCH_ENDPOINT?.trim();
   try {
+    if (mcpUrl) {
+      return normalizeMcpSearchResponse(
+        query,
+        "mcp",
+        retrievedAt,
+        await callMcpTool(mcpUrl, process.env.MAS_EXTERNAL_SEARCH_MCP_TOOL?.trim() || "metaso_web_search", mcpSearchArguments(query, normalizedLimit)),
+        normalizedLimit,
+      );
+    }
     if (endpoint) {
       const url = endpoint.replaceAll("{query}", encodeURIComponent(query)).replaceAll("{limit}", String(normalizedLimit));
       return normalizeExternalSearchResponse(query, "configured_endpoint", retrievedAt, await fetchJsonWithTimeout(url), normalizedLimit);
@@ -637,11 +819,122 @@ async function runExternalSearch(query: string, limit = 5): Promise<{
   } catch (error) {
     return {
       query,
-      provider: endpoint ? "configured_endpoint" : "duckduckgo_instant_answer",
+      provider: mcpUrl ? "mcp" : endpoint ? "configured_endpoint" : "duckduckgo_instant_answer",
       retrievedAt,
       results: [],
       warning: `外部检索失败：${error instanceof Error ? error.message : String(error)}`,
     };
+  }
+}
+
+export async function runExternalRead(url: string, format: "markdown" | "json" = "markdown"): Promise<{
+  url: string;
+  provider: string;
+  retrievedAt: string;
+  format: "markdown" | "json";
+  title?: string;
+  content: string;
+  warning?: string;
+}> {
+  const normalizedUrl = url.trim();
+  const retrievedAt = new Date().toISOString();
+  const mcpUrl = process.env.MAS_EXTERNAL_SEARCH_MCP_URL?.trim();
+  try {
+    if (mcpUrl) {
+      return normalizeMcpReadResponse(
+        normalizedUrl,
+        "mcp",
+        retrievedAt,
+        format,
+        await callMcpTool(mcpUrl, process.env.MAS_EXTERNAL_READ_MCP_TOOL?.trim() || "metaso_web_reader", { url: normalizedUrl, format }),
+      );
+    }
+    return normalizeHttpReadResponse(normalizedUrl, "http_fetch", retrievedAt, format, await fetchTextWithTimeout(normalizedUrl));
+  } catch (error) {
+    return {
+      url: normalizedUrl,
+      provider: mcpUrl ? "mcp" : "http_fetch",
+      retrievedAt,
+      format,
+      content: "",
+      warning: `外部读取失败：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function mcpSearchArguments(query: string, limit: number): Record<string, unknown> {
+  const scope = process.env.MAS_EXTERNAL_SEARCH_MCP_SCOPE?.trim() || "webpage";
+  return {
+    q: query,
+    size: limit,
+    scope,
+    includeSummary: true,
+    includeRawContent: false,
+  };
+}
+
+async function callMcpTool(url: string, toolName: string, args: Record<string, unknown>): Promise<unknown> {
+  const response = await fetchJsonRpcWithTimeout(url, {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: toolName,
+      arguments: args,
+    },
+  });
+  const message = response && typeof response === "object" ? (response as Record<string, unknown>) : {};
+  if (message.error) throw new Error(`MCP ${toolName} 调用失败：${JSON.stringify(message.error).slice(0, 500)}`);
+  return message.result ?? response;
+}
+
+async function fetchJsonRpcWithTimeout(url: string, body: unknown): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: mcpHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return parseJsonOrSse(await response.text());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function mcpHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    accept: "application/json, text/event-stream",
+    "content-type": "application/json",
+    "user-agent": "mas-ha-orchestration/0.1",
+  };
+  const headerJson = process.env.MAS_EXTERNAL_SEARCH_MCP_HEADERS_JSON?.trim();
+  if (headerJson) {
+    const parsed = JSON.parse(headerJson) as Record<string, unknown>;
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value.trim()) headers[key] = value.trim();
+    }
+  }
+  const authorization = process.env.MAS_EXTERNAL_SEARCH_MCP_AUTHORIZATION?.trim();
+  if (authorization) headers.Authorization = authorization;
+  return headers;
+}
+
+function parseJsonOrSse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const dataLines = text
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice("data:".length).trim())
+      .filter((line) => line && line !== "[DONE]");
+    const last = dataLines.at(-1);
+    if (!last) throw new Error("响应不是 JSON，且未包含 SSE data。");
+    return JSON.parse(last);
   }
 }
 
@@ -655,6 +948,21 @@ async function fetchJsonWithTimeout(url: string): Promise<unknown> {
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchTextWithTimeout(url: string): Promise<string> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { accept: "text/html, text/plain, application/json", "user-agent": "mas-ha-orchestration/0.1" },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.text();
   } finally {
     clearTimeout(timeout);
   }
@@ -725,7 +1033,17 @@ function normalizeExternalSearchResponse(
   limit: number,
 ): { query: string; provider: string; retrievedAt: string; results: Array<{ title: string; url?: string; snippet: string; source?: string }>; warning?: string } {
   const data = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const rawResults = Array.isArray(data.results) ? data.results : Array.isArray(data.items) ? data.items : [];
+  const rawResults = Array.isArray(data.results)
+    ? data.results
+    : Array.isArray(data.items)
+    ? data.items
+    : Array.isArray(data.webpages)
+    ? data.webpages
+    : Array.isArray(data.documents)
+    ? data.documents
+    : Array.isArray(data.papers)
+    ? data.papers
+    : [];
   const results = rawResults
     .map((item) => {
       const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
@@ -738,6 +1056,101 @@ function normalizeExternalSearchResponse(
     .filter((item) => item.snippet.trim().length > 0 || item.url)
     .slice(0, limit);
   return { query, provider, retrievedAt, results, warning: results.length ? undefined : "外部检索端点没有返回可用 results/items。" };
+}
+
+function normalizeMcpSearchResponse(
+  query: string,
+  provider: string,
+  retrievedAt: string,
+  value: unknown,
+  limit: number,
+): { query: string; provider: string; retrievedAt: string; results: Array<{ title: string; url?: string; snippet: string; source?: string }>; warning?: string } {
+  const result = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const candidates: unknown[] = [];
+  if (result.structuredContent) candidates.push(result.structuredContent);
+  if (result.content && Array.isArray(result.content)) {
+    for (const item of result.content) {
+      const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+      const text = typeof record.text === "string" ? record.text.trim() : "";
+      if (!text) continue;
+      try {
+        candidates.push(JSON.parse(text));
+      } catch {
+        candidates.push({ results: [{ title: query, snippet: text, source: "MCP text" }] });
+      }
+    }
+  }
+  for (const candidate of candidates) {
+    const normalized = normalizeExternalSearchResponse(query, provider, retrievedAt, candidate, limit);
+    if (normalized.results.length) return normalized;
+  }
+  return { query, provider, retrievedAt, results: [], warning: "MCP 搜索工具没有返回可用内容。" };
+}
+
+function normalizeMcpReadResponse(
+  url: string,
+  provider: string,
+  retrievedAt: string,
+  format: "markdown" | "json",
+  value: unknown,
+): { url: string; provider: string; retrievedAt: string; format: "markdown" | "json"; title?: string; content: string; warning?: string } {
+  const result = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  if (result.structuredContent) {
+    const normalized = normalizeReadObject(url, provider, retrievedAt, format, result.structuredContent);
+    if (normalized.content) return normalized;
+  }
+  if (Array.isArray(result.content)) {
+    const parts: string[] = [];
+    let title: string | undefined;
+    for (const item of result.content) {
+      const record = item && typeof item === "object" ? (item as Record<string, unknown>) : {};
+      const text = typeof record.text === "string" ? record.text.trim() : "";
+      if (!text) continue;
+      try {
+        const normalized = normalizeReadObject(url, provider, retrievedAt, format, JSON.parse(text));
+        if (normalized.title && !title) title = normalized.title;
+        if (normalized.content) parts.push(normalized.content);
+      } catch {
+        parts.push(text);
+      }
+    }
+    const content = parts.join("\n\n").slice(0, 60_000);
+    return { url, provider, retrievedAt, format, title, content, warning: content ? undefined : "MCP 读取工具没有返回可用内容。" };
+  }
+  return { url, provider, retrievedAt, format, content: "", warning: "MCP 读取工具没有返回可用内容。" };
+}
+
+function normalizeHttpReadResponse(
+  url: string,
+  provider: string,
+  retrievedAt: string,
+  format: "markdown" | "json",
+  text: string,
+): { url: string; provider: string; retrievedAt: string; format: "markdown" | "json"; title?: string; content: string; warning?: string } {
+  return { url, provider, retrievedAt, format, content: text.trim().slice(0, 60_000), warning: text.trim() ? undefined : "HTTP 读取没有返回可用内容。" };
+}
+
+function normalizeReadObject(
+  url: string,
+  provider: string,
+  retrievedAt: string,
+  format: "markdown" | "json",
+  value: unknown,
+): { url: string; provider: string; retrievedAt: string; format: "markdown" | "json"; title?: string; content: string; warning?: string } {
+  const data = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const title = firstString(data.title, data.name, data.heading);
+  const content =
+    firstString(data.content, data.markdown, data.text, data.rawContent, data.raw_content, data.summary, data.snippet) ??
+    (Object.keys(data).length ? JSON.stringify(data, null, 2) : "");
+  return {
+    url: firstString(data.url, data.link) ?? url,
+    provider,
+    retrievedAt,
+    format,
+    title,
+    content: content.trim().slice(0, 60_000),
+    warning: content.trim() ? undefined : "读取结果没有返回可用内容。",
+  };
 }
 
 function firstString(...values: unknown[]): string | undefined {
@@ -869,14 +1282,20 @@ function reviewParameters(label: string): unknown {
   });
 }
 
-function toToolEvent(id: string, toolName: string, rawInput: unknown): ToolEventInput {
+function toToolEvent(id: string, toolName: string, rawInput: unknown, role?: RoleName): ToolEventInput {
   return {
     id,
-    title: toolName,
+    title: role ? `${roleDisplayName(role)}: ${toolName}` : toolName,
     kind: toToolKind(toolName),
     rawInput,
     locations: extractLocations(rawInput),
   };
+}
+
+function roleDisplayName(role: RoleName): string {
+  if (role === "ha") return "HA";
+  if (role === "ego") return "Ego";
+  return "Superego";
 }
 
 function toToolKind(toolName: string): ToolEventInput["kind"] {

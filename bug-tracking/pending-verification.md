@@ -41,6 +41,19 @@
 - 复测日期：
 - 复测结果：本地 `npm run e2e:smoke` 已覆盖 CLI `--run-id` 过滤和核心 `jobId` 过滤，CLI `--job-id` 仍待独立复测。
 
+## BUG-20260609-001：HA 终验 typed tool 被拒绝且解析错误误报为 Superego
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 真实会话 `custom-temp-1780992492653`
+- 修复摘要：`ha_final_review` 加入内部结构化工具集合，避免在 `deny-writes` 下被当作普通执行工具拒绝；`parseCritique` 支持调用方传入来源，HA 终验解析失败时不再误报为 `Superego 未输出可解析 JSON`。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：在 `ha-ego-superego` 模式运行一次会触发 HA 终验的任务，确认 HA 能成功提交 `ha_final_review` typed tool；构造 HA 终验非 JSON 输出，确认错误消息为 `HA 终验 未输出可解析 JSON`。
+- 通过标准：HA 终验工具调用不被权限层拒绝；终验失败时错误归因准确；AionUI 不再显示 `HA 终验结构化输出解析失败且自修复失败：Superego 未输出可解析 JSON`。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 `npm run typecheck` 和 `npm.cmd run e2e:smoke` 已通过；仍待真实 AionUI 会话独立复测。
+
 ## 记录模板
 
 ```md

@@ -11,6 +11,19 @@ const masHome = join(tempRoot, "mas-home");
 const workspace = join(tempRoot, "workspace");
 mkdirSync(workspace, { recursive: true });
 
+function smokeEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    MAS_HOME: masHome,
+    MAS_HA_MODEL: "",
+    MAS_EGO_MODEL: "",
+    MAS_SUPEREGO_MODEL: "",
+    MAS_HA_THINKING_LEVEL: "",
+    MAS_EGO_THINKING_LEVEL: "",
+    MAS_SUPEREGO_THINKING_LEVEL: "",
+  };
+}
+
 function cliSmoke(): void {
   const doctor = runCli(["doctor"]);
   assert(doctor.stdout.includes("OK  Pi SDK 导入: ok"), "doctor 应能导入 Pi SDK");
@@ -94,6 +107,17 @@ async function acpSmoke(): Promise<void> {
     );
 
     await client.waitForNotification((msg) => hasSessionUpdate(msg, sessionId, "available_commands_update"), "available_commands_update");
+    await client.waitForNotification((msg) => JSON.stringify(msg).includes("MAS 角色模型配置"), "角色模型配置展示");
+    assert(
+      client.notifications.some(
+        (msg) =>
+          JSON.stringify(msg).includes("MAS 角色模型配置") &&
+          JSON.stringify(msg).includes("HA") &&
+          JSON.stringify(msg).includes("Ego") &&
+          JSON.stringify(msg).includes("Superego"),
+      ),
+      "session/new 应在会话开始展示 HA/Ego/Superego 模型配置",
+    );
     assert(
       client.notifications.some((msg) => JSON.stringify(msg).includes("\"compact\"") && JSON.stringify(msg).includes("\"goal\"")),
       "session/new 应公告 /compact 和 /goal 命令",
@@ -127,7 +151,7 @@ async function acpSmoke(): Promise<void> {
 function runCli(args: string[], expectedStatus = 0): { stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, ["--import", "tsx", join(repoRoot, "src/cli.ts"), ...args], {
     cwd: repoRoot,
-    env: { ...process.env, MAS_HOME: masHome },
+    env: smokeEnv(),
     encoding: "utf8",
   });
   if (result.status !== expectedStatus) {
@@ -141,7 +165,7 @@ function runCli(args: string[], expectedStatus = 0): { stdout: string; stderr: s
 function startAcp(args: string[]) {
   const child = spawn(process.execPath, ["--import", "tsx", join(repoRoot, "src/cli.ts"), ...args], {
     cwd: repoRoot,
-    env: { ...process.env, MAS_HOME: masHome },
+    env: smokeEnv(),
     stdio: ["pipe", "pipe", "pipe"],
   });
   return new JsonRpcTestClient(child);
@@ -245,7 +269,9 @@ async function autonomyStorageSmoke(): Promise<void> {
   const { ContextPerturbationController } = await import("../src/core/context-perturbation.js");
   const { buildRecentActivitySummary } = await import("../src/core/activity.js");
   const { buildEgoPrompt, buildHaDecisionPrompt, buildHaFinalReviewPrompt, buildSuperegoPrompt } = await import("../src/core/prompts.js");
-  const { isReadOnlyTool } = await import("../src/pi/pi-sdk.js");
+  const { enforceHaFinalReviewGate, formatNeedsAttentionResult } = await import("../src/core/runner.js");
+  const { parseCritique } = await import("../src/core/prompts.js");
+  const { isAutoApprovedReviewTool, isInternalTool, isReadOnlyTool, roleToolNames, routeLiteralThinkTextDeltasForTest } = await import("../src/pi/pi-sdk.js");
   const store = new MasStore();
   const perturbations = new ContextPerturbationController(store);
   const autonomyWorkspace = join(tempRoot, "autonomy-workspace");
@@ -288,8 +314,16 @@ async function autonomyStorageSmoke(): Promise<void> {
     const recentActivity = buildRecentActivitySummary(store, { sessionId: "e2e-session", limit: 5 });
     assert(recentActivity.rendered.includes("Ego 最近完成了 E2E"), "近期活动摘要应包含 Ego 最近执行事实");
     assert(recentActivity.recentRoles.includes("ego"), "近期活动摘要应记录最近出现过 Ego");
+    assert(buildHaDecisionPrompt("E2E").includes("不是交付执行者"), "HA 路由 prompt 应明确 HA 不是交付执行者");
+    assert(buildHaDecisionPrompt("E2E").includes("不是替 Ego 写文件"), "HA 路由 prompt 应禁止替 Ego 提前完成交付");
+    assert(!buildHaDecisionPrompt("E2E").includes("不要停在建议、计划或半成品"), "HA 路由 prompt 不应继承执行者式持续交付倾向");
     assert(buildHaDecisionPrompt("E2E 最近在做什么").includes("mas_query_recent_activity"), "HA prompt 应要求状态问题使用近期活动查询工具");
     assert(buildHaDecisionPrompt("查询第三方库当前版本").includes("mas_external_search"), "HA prompt 应说明外部检索工具");
+    assert(buildHaDecisionPrompt("读取外部 URL 原文").includes("mas_external_read"), "HA prompt 应说明外部读取工具");
+    assert(buildHaDecisionPrompt("严格按照 user-prompt.md 完成").includes("本地只读 intake"), "HA prompt 应说明路由阶段本地只读 intake");
+    assert(buildHaDecisionPrompt("严格按照 user-prompt.md 完成").includes("keyCriteria"), "HA prompt 应要求抽取关键口径清单");
+    assert(buildHaDecisionPrompt("输出 Excel 文件").includes("Mac 和 Windows 可打开性"), "HA 合同 prompt 应要求 Excel 跨平台可打开");
+    assert(buildHaDecisionPrompt("输出 Excel 文件").includes("externalLinks"), "HA 合同 prompt 应要求检查 Excel 外部链接风险");
     assert(
       buildHaFinalReviewPrompt("E2E", "验收合同", "{}", undefined).includes("ha_final_review"),
       "HA 终验 prompt 应要求调用 ha_final_review 工具",
@@ -298,7 +332,73 @@ async function autonomyStorageSmoke(): Promise<void> {
       buildHaFinalReviewPrompt("E2E", "验收合同", "{}", undefined).includes("mas_external_search"),
       "HA 终验 prompt 应允许使用外部检索工具做交叉验证",
     );
-    assert(buildEgoPrompt("E2E", "验收合同").includes("mas_query_memory"), "Ego prompt 应说明历史经验查询工具");
+    assert(
+      buildHaFinalReviewPrompt("E2E", "验收合同", "{}", undefined).includes("mas_external_read"),
+      "HA 终验 prompt 应允许使用外部读取工具核对来源原文",
+    );
+    assert(
+      buildHaFinalReviewPrompt("E2E", "验收合同包含 keyCriteria", "{}", undefined).includes("keyCriteria"),
+      "HA 终验 prompt 应要求按关键口径验收",
+    );
+    assert(
+      buildHaFinalReviewPrompt("E2E 输出 Excel", "验收合同", "{}", undefined).includes("Mac 和 Windows 可打开性"),
+      "HA 终验 prompt 应验收 Excel 跨平台可打开性",
+    );
+    assert(buildEgoPrompt("E2E", "验收合同").includes("现实执行面"), "Ego prompt 应体现心理模型中的现实执行面");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("实现假设清单"), "Ego prompt 应要求实现假设清单");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("让当前系统的形状决定实现方式"), "Ego prompt 应体现先读上下文和按现有系统推进");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("合法 OOXML/ZIP"), "Ego prompt 应要求 Excel 输出做 OOXML 兼容验证");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("Mac 和 Windows 都能打开"), "Ego prompt 应要求 Excel 输出兼容 Mac 和 Windows");
+    assert(!buildEgoPrompt("E2E", "验收合同").includes("mas_query_memory"), "Ego prompt 不应暴露历史经验查询工具");
+    assert(!buildEgoPrompt("E2E", "验收合同").includes("mas_query_recent_activity"), "Ego prompt 不应暴露近期活动查询工具");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("不拥有 MAS 近期活动"), "Ego prompt 应明确全局查询工具边界");
+    assert(!roleToolNames("ego").includes("mas_query_memory"), "Ego 工具白名单不应包含历史经验查询工具");
+    assert(!roleToolNames("ego").includes("mas_query_recent_activity"), "Ego 工具白名单不应包含近期活动查询工具");
+    assert(!roleToolNames("ego").includes("mas_external_read"), "Ego 工具白名单不应包含外部读取工具");
+    assert(roleToolNames("ha").includes("mas_query_recent_activity"), "HA 工具白名单应包含近期活动查询工具");
+    assert(roleToolNames("ha").includes("mas_external_read"), "HA 工具白名单应包含外部读取工具");
+    assert(roleToolNames("ha").includes("read"), "HA 路由阶段应包含本地只读文件工具");
+    assert(roleToolNames("ha").includes("bash"), "HA 路由阶段应包含自动授权 bash 用于只读 intake");
+    assert(roleToolNames("ha", "final_review").includes("read"), "HA 终验阶段应包含只读文件工具");
+    assert(roleToolNames("ha", "final_review").includes("bash"), "HA 终验阶段应包含自动授权 bash 用于只读复算");
+    assert(roleToolNames("superego").includes("mas_query_recent_activity"), "Superego 工具白名单应包含近期活动查询工具");
+    assert(roleToolNames("superego").includes("bash"), "Superego 工具白名单应包含自动授权 bash 用于只读复算");
+    assert(!roleToolNames("superego").includes("mas_external_read"), "Superego 工具白名单不应包含外部读取工具");
+    assert(isAutoApprovedReviewTool({ role: "ha", phase: "route" }, "bash"), "HA 路由 bash 应自动授权");
+    assert(isAutoApprovedReviewTool({ role: "ha", phase: "final_review" }, "bash"), "HA 终验 bash 应自动授权");
+    assert(isAutoApprovedReviewTool({ role: "superego", phase: "review" }, "bash"), "Superego 评审 bash 应自动授权");
+    assert(!isAutoApprovedReviewTool({ role: "ego", phase: "execute" }, "bash"), "Ego bash 不应自动授权");
+    const routedThink = routeLiteralThinkTextDeltasForTest(["外部文本 <thi", "nk>内部思考</th", "ink> 后续文本"]);
+    assert(routedThink.text === "外部文本  后续文本", "文本通道中的显式 <think> 块不应泄漏到普通对话");
+    assert(routedThink.thought === "内部思考", "文本通道中的显式 <think> 块应归入思考流");
+    assert(isInternalTool("ha_final_review"), "HA 终验 typed tool 应作为内部结构化工具捕获，不能被 deny-writes 拒绝");
+    let haParseError = "";
+    try {
+      parseCritique("not json", "HA 终验");
+    } catch (error) {
+      haParseError = error instanceof Error ? error.message : String(error);
+    }
+    assert(haParseError.includes("HA 终验 未输出可解析 JSON"), "HA 终验解析错误不应误报为 Superego");
+    assert(
+      buildSuperegoPrompt("E2E", "验收合同包含 keyCriteria", "{}", {} as any).includes("约束和反思面"),
+      "Superego prompt 应体现心理模型中的约束和反思面",
+    );
+    assert(
+      buildSuperegoPrompt("E2E", "验收合同包含 keyCriteria", "{}", {} as any).includes("关键业务口径高于输出结构"),
+      "Superego prompt 应内化证据层级",
+    );
+    assert(
+      buildSuperegoPrompt("E2E", "验收合同包含 keyCriteria", "{}", {} as any).includes("文件像结果"),
+      "Superego prompt 应包含评审前证伪问题",
+    );
+    assert(
+      buildSuperegoPrompt("E2E", "验收合同包含 keyCriteria", "{}", {} as any).includes("扰动不是随机提醒"),
+      "Superego prompt 应把扰动定义为反事实问题",
+    );
+    assert(
+      buildSuperegoPrompt("E2E 输出 Excel", "验收合同", "{}", {} as any).includes("异常 externalLinks"),
+      "Superego prompt 应评审 Excel 外部链接兼容风险",
+    );
     assert(
       buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("mas_query_recent_activity"),
       "Superego prompt 应说明近期活动查询工具",
@@ -307,9 +407,58 @@ async function autonomyStorageSmoke(): Promise<void> {
       !buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("mas_external_search"),
       "Superego prompt 不应暴露 HA 专属外部检索工具",
     );
+    assert(
+      !buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("mas_external_read"),
+      "Superego prompt 不应暴露 HA 专属外部读取工具",
+    );
     assert(isReadOnlyTool("mas_query_memory"), "历史经验查询工具应被权限层识别为只读");
     assert(isReadOnlyTool("mas_query_recent_activity"), "近期活动查询工具应被权限层识别为只读");
     assert(isReadOnlyTool("mas_external_search"), "外部检索工具应被权限层识别为只读");
+    assert(isReadOnlyTool("mas_external_read"), "外部读取工具应被权限层识别为只读");
+    assert(
+      enforceHaFinalReviewGate({
+        blocking_issues: 0,
+        quality_score: 0,
+        summary: "",
+        next_action: "accept",
+        evidenceQuality: 0,
+        critique_items: [],
+      }).next_action === "escalate",
+      "HA 终验空壳 accept 应被门禁升级",
+    );
+    const haFinalReviewMessage = formatNeedsAttentionResult({
+      headline: "HA 终验未通过：需要人工介入。",
+      haFinalReview: {
+        blocking_issues: 1,
+        quality_score: 0.2,
+        summary: "accept",
+        next_action: "escalate",
+        evidenceQuality: 0,
+        remainingUncertainty: 0.8,
+        nextBestObservation: "重新执行 HA 终验。",
+        critique_items: [
+          {
+            category: "ha_final_review_gate",
+            severity: "high",
+            suggestion: "HA 终验 accept 必须包含非空摘要、正向质量评分和正向证据质量。",
+          },
+        ],
+      },
+      superegoReview: {
+        blocking_issues: 0,
+        quality_score: 0.9,
+        summary: "Superego 已完成独立抽样验证。",
+        next_action: "accept",
+        evidenceQuality: 0.85,
+        remainingUncertainty: 0.15,
+        critique_items: [],
+      },
+      egoOutput: "Ego 输出摘要",
+    });
+    assert(haFinalReviewMessage.includes("HA 终验批注："), "终验失败消息应包含 HA 人类可读批注");
+    assert(haFinalReviewMessage.includes("Superego 批注："), "终验失败消息应包含 Superego 人类可读批注");
+    assert(!haFinalReviewMessage.includes("\"blocking_issues\""), "终验失败消息不应泄漏内部 JSON 字段名");
+    assert(!haFinalReviewMessage.includes("{\n"), "终验失败消息不应直接展示 JSON 对象");
 
     const now = new Date(Date.now() - 1000).toISOString();
     const reflectionId = store.addReflectionTask({

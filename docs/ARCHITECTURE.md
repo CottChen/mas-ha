@@ -18,12 +18,16 @@ MAS 的核心不是多个模型轮流发言，而是让不同角色持有不同�
 
 | 角色 | 责任 | 工具与证据边界 |
 | --- | --- | --- |
-| HA | 面向用户，负责路由、澄清、验收合同、最终用户验收和交叉验证 | `mas_query_memory`、`mas_query_recent_activity`、`mas_external_search`、`ha_decision`、`ha_final_review` |
-| Ego | 执行者，负责读取、编辑、运行命令、产出结果和验证记录 | 工作区读写、命令执行、`ego_result`；不拥有外部检索工具 |
-| Superego | 系统审计 Critic/Judge，负责基于 AuditPacket、只读检查和历史风险评审 Ego 输出 | AuditPacket、只读工作区检查、MAS 记忆/近期活动、`superego_review` |
+| HA | 面向用户，负责路由、澄清、只读 intake、验收合同、最终用户验收和交叉验证 | 路由阶段使用 MAS 记忆、近期活动、外部检索/读取、工作区只读工具、自动授权只读 `bash` 和 `ha_decision`；终验阶段继续拥有工作区只读工具和自动授权 `bash`，用于独立抽样复算和 `ha_final_review` |
+| Ego | 执行者，负责读取、编辑、运行命令、产出结果和验证记录 | 工作区读写、命令执行、`ego_result`；不拥有 MAS 记忆、近期活动或外部检索工具 |
+| Superego | 系统审计 Critic/Judge，负责基于 AuditPacket、只读检查和历史风险评审 Ego 输出 | AuditPacket、只读工作区检查、MAS 记忆/近期活动、自动授权 `bash` 只读复算、`superego_review` |
 | Id / Dream | 低权限经验重组和裁剪 | 只操作 Experience Graph，不写用户工作区，不执行外部工具 |
 
 HA 和 Superego 都是 Critic，但视角不同：HA 代表用户验收交付价值和真实意图，Superego 代表系统审计边界和证据一致性。
+
+AionUI 中会展示 HA、Ego、Superego 的流式文本、思考、工具调用和工具返回，工具标题带角色前缀，便于用户追踪组织协作过程。展示层不等于上下文层：MAS 只把用户消息和最终 MAS 结果写入会话记忆；HA、Ego、Superego 的 Pi session 彼此隔离，后续角色只能看到 MAS 框架显式注入给它的任务、验收合同、Ego 输出、Superego 评审、AuditPacket、会话摘要或工具查询结果。
+
+Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执行面，负责把候选想法落到当前证据和工具结果；Superego 是约束和反思面，负责证伪、审计和发现低确定性区域。基础 prompt 不在共享层同时注入心理学术语，避免角色名和隐喻互相污染。
 
 ## 执行链路
 
@@ -31,13 +35,14 @@ HA 和 Superego 都是 Critic，但视角不同：HA 代表用户验收交付价
 
 1. AionUI 通过 ACP 调用 MAS。
 2. MAS 恢复 `sessionId` 对应的会话摘要、最近消息、技能摘要和运行配置。
-3. HA 判断直接回答、澄清或进入执行；进入执行时生成验收合同。
-4. MAS 生成边界 baseline snapshot。
-5. Ego 按验收合同执行任务，提交 `ego_result`。
-6. Superego 基于 Ego 结果和 AuditPacket 做系统审计评审。
-7. HA 基于用户意图、Ego 结果、Superego 结论、只读抽样和必要外部检索做最终验收。
-8. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
-9. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
+3. HA 判断直接回答、澄清或进入执行；进入执行前可做本地只读 intake，读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文。
+4. HA 生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。
+5. MAS 生成边界 baseline snapshot。
+6. Ego 按验收合同执行任务，提交 `ego_result`。
+7. Superego 基于 Ego 结果和 AuditPacket 做系统审计评审。
+8. HA 基于用户意图、Ego 结果、Superego 结论、只读抽样和必要外部检索做最终验收。
+9. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
+10. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
 
 未启用 Superego 的 `ha-ego` 模式仍保留 HA 终验；只是跳过系统审计评审和返工环节。
 
@@ -45,15 +50,15 @@ HA 和 Superego 都是 Critic，但视角不同：HA 代表用户验收交付价
 
 MAS 当前采用角色异质工具分工：
 
-- Ego 负责行动工具，拥有工作区读写和命令执行能力。
-- Superego 负责系统审计工具，依赖 AuditPacket、只读工作区检查和 MAS 内部运行事实。
-- HA 负责用户代理验收工具，拥有外部检索工具 `mas_external_search`，用于引入 MAS 当前会话、工作区、Experience Graph 和 AuditPacket 之外的公开证据候选。
+- Ego 负责行动工具，拥有工作区读写和命令执行能力；不直接查询 MAS 记忆、近期活动或外部检索，避免执行层用历史状态扩大任务边界。
+- Superego 负责系统审计工具，依赖 AuditPacket、只读工作区检查、MAS 内部运行事实和自动授权只读命令抽样复算。
+- HA 负责用户代理 intake 和验收工具，拥有外部检索工具 `mas_external_search`、外部读取工具 `mas_external_read`、工作区只读工具和自动授权只读 `bash`。路由阶段的本地工具只用于理解用户任务和生成更可靠的合同，不用于提前完成交付。
 
 这个设计借鉴 Tool-MAD 的异质外部工具思想。Tool-MAD 指出，传统 MAD 容易依赖模型内部知识或静态文档；通过为不同 agent 分配不同外部工具，例如 Search API 或 RAG 模块，可以引入多样化证据视角，并提升事实核验鲁棒性。
 
 参考：Seyeon Jeong、Yeonjun Choi、JongWook Kim、Beakcheol Jang，*Tool-MAD: A Multi-Agent Debate Framework for Fact Verification with Diverse Tool Augmentation and Adaptive Retrieval*，arXiv:2601.04742，2026-01-08，https://arxiv.org/abs/2601.04742。
 
-`mas_external_search` 的结果只是候选证据，不能覆盖用户目标、验收合同、当前仓库证据、AuditPacket 或确定性审计门禁。HA 采用外部结果时必须保留来源、检索时间和交叉验证依据。
+`mas_external_search` / `mas_external_read` 的结果只是候选证据，不能覆盖用户目标、验收合同、当前仓库证据、AuditPacket 或确定性审计门禁。HA 采用外部结果时必须保留来源、检索/读取时间和交叉验证依据。
 
 ## 模型选择策略
 
@@ -64,14 +69,18 @@ MAS 当前采用角色异质工具分工：
 - Ego 未配置 `MAS_EGO_MODEL` 时直接使用 Pi 默认模型。
 - Superego 未配置 `MAS_SUPEREGO_MODEL` 时直接使用 Pi 默认模型，不探测其他模型。
 - 显式配置的角色模型不可用时，MAS 回退 Pi 默认模型，并在 ACP metadata 和 MAS event 中记录 warning。
+- `session/new` 和 `session/load` 会向 AionUI 展示一次 `MAS 角色模型配置`，用于让用户看到 HA / Ego / Superego 的实际模型分工；该展示事件不写入会话历史，也不进入角色 Pi session 上下文。
 
 ## 记忆与外部证据
 
-MAS 不默认把历史经验和近期活动注入所有 agent 上下文，而是提供只读查询工具：
+MAS 不默认把历史经验和近期活动注入所有 agent 上下文，而是按角色提供只读查询工具：
 
 - `mas_query_memory`：查询 Experience Graph 历史经验候选。
 - `mas_query_recent_activity`：查询 `runs/agent_runs` 近期运行事实。
 - `mas_external_search`：HA 专属外部检索工具。
+- `mas_external_read`：HA 专属外部 URL 读取工具，用于核对搜索候选或用户给定 URL 原文。
+
+HA 可以使用 `mas_query_memory`、`mas_query_recent_activity`、`mas_external_search`、`mas_external_read`、工作区只读工具和自动授权只读 `bash` 完成路由、状态回答、合同前 intake 和最终用户验收。Superego 可以使用 `mas_query_memory`、`mas_query_recent_activity`、工作区只读工具和自动授权 `bash` 辅助系统审计，但不能覆盖 AuditPacket。Ego 不拥有这些全局查询工具，只消费 HA 验收合同、Superego 返工批注和当前工作区证据。
 
 所有检索结果都不是权威事实，采用前必须结合当前任务证据、AuditPacket、用户目标和验收合同交叉验证。
 
@@ -97,7 +106,7 @@ MAS 是 AionUI 会话一致性的责任方。AionUI 的 `sessionId`、MAS 的 `r
 - `runId`：一次用户请求对应的 MAS 执行身份。
 - Pi session：HA、Ego 或 Superego 在某一轮中的执行实例。
 
-SQLite 当前保存消息、摘要、运行记录、agent_run、approval、audit、events、Experience Graph、低熵信号、候选和自主调度任务。Pi session 使用内存型执行实例，长期会话语义由 MAS 持久化和显式上下文注入保证。
+SQLite 当前保存消息、摘要、运行记录、agent_run、approval、audit、events、Experience Graph、低熵信号、候选和自主调度任务。Pi session 使用内存型执行实例，长期会话语义由 MAS 持久化和显式上下文注入保证。AionUI 可见的中间工具流和 agent 思考不会自动成为下一轮 MAS agent 的上下文；需要跨 run 使用的事实必须通过 MAS 存储、AuditPacket、agent_run 结构化输出、会话摘要或显式查询工具进入上下文。
 
 ## 当前边界
 

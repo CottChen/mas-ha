@@ -68,6 +68,8 @@ npm run doctor
 
 `session/new` 和 `session/load` 会返回编排模式配置项。AionUI 如果展示配置面板，可在“编排模式”中切换 `ha-ego-superego` 或 `ha-ego`；MAS 也兼容 `session/set_config_option` 更新该配置。
 
+会话创建或加载后，MAS 会发送一条可见的 `MAS 角色模型配置` 思考消息，列出 Pi 默认模型、AionUI 当前选择，以及 HA / Ego / Superego 的 resolved model、requested model、配置来源、thinking level、异质性和 warning。这条消息只用于用户观察当前会话的模型分工，不写入 MAS 会话历史，也不会进入 HA / Ego / Superego 的 Pi session 上下文。
+
 MAS 会向 AionUI 公告以下命令：
 
 - `/compact`：压缩当前 MAS 会话上下文，后续请求会携带压缩摘要和最近对话。
@@ -101,9 +103,47 @@ MAS_SUPEREGO_THINKING_LEVEL=high
 
 ### 外部检索配置
 
-HA 拥有 `mas_external_search` 只读外部检索工具，用于在路由回答和最终验收时引入 MAS 内部证据之外的公开证据候选。Ego 不获得该工具，避免执行层用外部搜索扩大任务边界；Superego 继续偏系统审计证据。
+HA 拥有 `mas_external_search` 只读外部检索工具和 `mas_external_read` 只读外部 URL 读取工具，用于在路由回答和最终验收时引入 MAS 内部证据之外的公开证据候选，并在需要时核对来源原文。Ego 不获得 MAS 记忆、近期活动、外部检索或外部读取工具，避免执行层用历史状态或外部搜索扩大任务边界；Superego 保留 MAS 记忆和近期活动查询能力，但继续偏系统审计证据。
 
-默认情况下，MAS 使用 DuckDuckGo Instant Answer API 作为无密钥外部检索后备。生产或稳定测试环境建议配置自己的搜索/RAG 服务：
+HA 路由阶段拥有工作区只读工具和自动授权只读 `bash`，用于读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文，从而生成更可靠的验收合同；该阶段不得写文件、改文件或提前完成交付。HA 终验阶段继续拥有工作区只读工具和自动授权 `bash`，用于代表用户做独立抽样复算。Superego 也拥有工作区只读工具和自动授权 `bash`，用于系统审计和只读抽样验证。评审阶段 `bash` 不再向 AionUI 请求人工审批，但仍记录 approval/audit 事件；Ego 的 `bash` 仍按常规权限策略处理。
+
+AionUI 会展示 HA、Ego、Superego 的流式文本、思考、工具调用和工具返回；工具标题带角色前缀，例如 `HA: bash`、`Ego: read`、`Superego: bash`。这些展示事件只用于用户观察，不会自动写入 MAS 会话上下文。MAS 持久化会话只保存用户消息、最终 MAS 回复、会话摘要和结构化运行记录；每个角色的 Pi session 独立创建，只能看到 MAS 框架显式传入的内容。
+
+默认情况下，MAS 使用 DuckDuckGo Instant Answer API 作为无密钥外部检索后备。生产或稳定测试环境建议配置自己的 MCP 搜索服务或普通搜索/RAG HTTP endpoint。
+
+### MCP 搜索服务
+
+配置 `MAS_EXTERNAL_SEARCH_MCP_URL` 后，HA 的 `mas_external_search` 默认通过 HTTP MCP `tools/call` 调用搜索工具，`mas_external_read` 默认通过同一 MCP 服务读取 URL 原文；未配置 MCP 时才回退到普通 `MAS_EXTERNAL_SEARCH_ENDPOINT`、HTTP fetch 或 DuckDuckGo。
+
+```bash
+MAS_EXTERNAL_SEARCH_MCP_URL=https://metaso.cn/api/mcp
+MAS_EXTERNAL_SEARCH_MCP_AUTHORIZATION=Bearer YOUR_LOCAL_TOKEN
+MAS_EXTERNAL_SEARCH_MCP_TOOL=metaso_web_search
+MAS_EXTERNAL_READ_MCP_TOOL=metaso_web_reader
+MAS_EXTERNAL_SEARCH_MCP_SCOPE=webpage
+```
+
+当前 MCP 适配默认按 Metaso `metaso_web_search` 参数调用：
+
+```json
+{"q":"...","size":5,"scope":"webpage","includeSummary":true,"includeRawContent":false}
+```
+
+`mas_external_read` 默认按 Metaso `metaso_web_reader` 参数调用：
+
+```json
+{"url":"https://example.com","format":"markdown"}
+```
+
+如果服务需要其他 headers，可用本地变量补充；不要把真实 token 写入仓库或文档：
+
+```bash
+MAS_EXTERNAL_SEARCH_MCP_HEADERS_JSON={"X-Custom":"value"}
+```
+
+### 普通 HTTP 搜索 endpoint
+
+未配置 MCP 时，可以继续使用普通搜索/RAG HTTP endpoint：
 
 ```bash
 MAS_EXTERNAL_SEARCH_ENDPOINT=https://example.internal/search?q={query}&limit={limit}
@@ -163,7 +203,7 @@ configOptions 中的 orchestrationMode
 
 `models.currentModelId` 和 `models.availableModels` 由 MAS 读取 Pi SDK 后端配置生成，不再使用 ACP 层硬编码值。实际来源是本机 `~/.pi/agent/settings.json`、`~/.pi/agent/models.json` 和 Pi 模型注册表；`metadata.modelConfig.defaultThinkingLevel` 会返回当前默认 thinking level。
 
-验证 `/compact` 命令公告和技能 metadata，可查看 `session/new` 后 MAS 发送的 `session/update`，其中应包含 `available_commands_update`；如果配置了 `MAS_SKILL_PATHS`，`session/new` 结果的 `metadata.skills` 应包含可发现技能摘要。
+验证 `/compact` 命令公告、角色模型展示和技能 metadata，可查看 `session/new` 后 MAS 发送的 `session/update`，其中应包含 `available_commands_update` 和 `MAS 角色模型配置`；如果配置了 `MAS_SKILL_PATHS`，`session/new` 结果的 `metadata.skills` 应包含可发现技能摘要。
 
 ## AionUI 日志排查
 
