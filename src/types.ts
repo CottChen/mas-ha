@@ -589,6 +589,11 @@ export interface BoundaryDiff {
 export interface AuditPacket {
   cwd: string;
   outputDir: string;
+  outputBoundary: {
+    mode: "workspace_root" | "output_dir";
+    reason: string;
+    allowedRoots: string[];
+  };
   suggestedSamplingStrategy: {
     objective: string;
     rules: string[];

@@ -54,6 +54,45 @@
 - 复测日期：
 - 复测结果：本地 `npm run typecheck` 和 `npm.cmd run e2e:smoke` 已通过；仍待真实 AionUI 会话独立复测。
 
+## BUG-20260611-001：Web 项目根目录源码被误判为 `output/` 外写入
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 真实会话 `custom-temp-df89d1ed`
+- 修复摘要：AuditPacket 改为从用户任务和 HA 验收合同推断允许输出边界；未显式要求 `output/` 时，workspace 根目录内的 greenfield 项目源码、文档和配置不再被标记为当前输出边界违规。Superego `escalate` 现在只作为内部升级信号，真正人工介入必须由 HA 终验决定。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：复用或构造 web 应用开发任务，允许输出为项目源码和文档但不要求 `output/`。
+- 通过标准：AuditPacket `outputBoundary.mode` 为 `workspace_root`，`currentWritesOutsideOutput` 为空；根目录源码、文档和配置不会触发 `output_boundary` 或 `workspace_boundary_diff` 阻塞。
+- 复测人：
+- 复测日期：
+- 复测结果：本地回归断言已加入 `npm run e2e:smoke`，仍待真实 AionUI 会话复测。
+
+## BUG-20260611-002：Ego prompt 缺少稳定工程工作人格，容易在大任务中铺骨架后自报完成
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 真实会话 `custom-temp-df89d1ed`
+- 修复摘要：Ego 基础 prompt 从清单式约束改为 Codex 风格的稳定工作人格：先读上下文、识别关键路径、优先打通可运行可验证的垂直闭环、用证据证明真实能力、不得主动把任务拆给未来轮次或用内部资源压力缩小范围。`needs_attention` 仅用于用户/外部条件阻塞；普通未完成不是停止理由。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：复用大型 greenfield web 应用任务，观察 Ego 是否先实现核心数据模型、持久化、核心业务流程、一个真实 UI/API 路径和可执行验证，而不是只生成目录、文档和未接线页面后自报完成。
+- 通过标准：Ego 输出不再用内部资源压力解释缩小范围；`completed` 必须附带能证明关键路径真实运行的验证证据；若核心能力缺失，Superego 能基于业务能力缺口返回 `revise` 而不是被 output 边界误报带偏。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 prompt 回归断言已加入 `npm run e2e:smoke`，仍待真实 AionUI 会话复测。
+
+## BUG-20260611-003：Ego/Superego 求助信号被框架直接当成用户人工介入
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 真实会话 `custom-temp-1f8092c0`
+- 修复摘要：Ego 的 `needs_attention/blocked` 不再直接结束 run，而是记录为内部未完成信号并进入 Superego/HA 复核；Superego 的 `escalate` 不再直接输出“需要人工介入”，而是先交给 HA 终验裁决。只有 HA 终验可以把 run 结束为用户可见 `needs_attention`。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：构造 Ego 上报 `needs_attention`、Superego 上报 `escalate` 的会话，观察 run 是否继续进入返工或 HA 终验，而不是立即显示“需要人工介入”。
+- 通过标准：非 HA 角色的求助/升级信号不会直接触发 `sink.done`；Superego 升级信号必须先进入 HA 终验；最终用户可见人工介入消息必须包含 HA 终验结论或最大轮次后 HA 判断。
+- 复测人：
+- 复测日期：
+- 复测结果：本地编排语义断言已加入 `npm run e2e:smoke`，仍待真实 AionUI 会话复测。
+
 ## 记录模板
 
 ```md

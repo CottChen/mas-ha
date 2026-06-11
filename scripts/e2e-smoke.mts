@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -265,11 +265,12 @@ async function autonomyStorageSmoke(): Promise<void> {
   process.env.MAS_HOME = masHome;
   const { MasStore } = await import("../src/storage.js");
   const { recordRunEntropy } = await import("../src/core/entropy.js");
+  const { buildAuditPacket, createBoundarySnapshot } = await import("../src/core/audit.js");
   const { AutonomyLoop } = await import("../src/core/autonomy.js");
   const { ContextPerturbationController } = await import("../src/core/context-perturbation.js");
   const { buildRecentActivitySummary } = await import("../src/core/activity.js");
   const { buildEgoPrompt, buildHaDecisionPrompt, buildHaFinalReviewPrompt, buildSuperegoPrompt } = await import("../src/core/prompts.js");
-  const { enforceHaFinalReviewGate, formatNeedsAttentionResult } = await import("../src/core/runner.js");
+  const { enforceHaFinalReviewGate, formatNeedsAttentionResult, routeEgoAttentionToCritique, routeSuperegoReviewForOrchestration } = await import("../src/core/runner.js");
   const { parseCritique } = await import("../src/core/prompts.js");
   const { isAutoApprovedReviewTool, isInternalTool, isReadOnlyTool, roleToolNames, routeLiteralThinkTextDeltasForTest } = await import("../src/pi/pi-sdk.js");
   const store = new MasStore();
@@ -322,8 +323,6 @@ async function autonomyStorageSmoke(): Promise<void> {
     assert(buildHaDecisionPrompt("读取外部 URL 原文").includes("mas_external_read"), "HA prompt 应说明外部读取工具");
     assert(buildHaDecisionPrompt("严格按照 user-prompt.md 完成").includes("本地只读 intake"), "HA prompt 应说明路由阶段本地只读 intake");
     assert(buildHaDecisionPrompt("严格按照 user-prompt.md 完成").includes("keyCriteria"), "HA prompt 应要求抽取关键口径清单");
-    assert(buildHaDecisionPrompt("输出 Excel 文件").includes("Mac 和 Windows 可打开性"), "HA 合同 prompt 应要求 Excel 跨平台可打开");
-    assert(buildHaDecisionPrompt("输出 Excel 文件").includes("externalLinks"), "HA 合同 prompt 应要求检查 Excel 外部链接风险");
     assert(
       buildHaFinalReviewPrompt("E2E", "验收合同", "{}", undefined).includes("ha_final_review"),
       "HA 终验 prompt 应要求调用 ha_final_review 工具",
@@ -341,17 +340,22 @@ async function autonomyStorageSmoke(): Promise<void> {
       "HA 终验 prompt 应要求按关键口径验收",
     );
     assert(
-      buildHaFinalReviewPrompt("E2E 输出 Excel", "验收合同", "{}", undefined).includes("Mac 和 Windows 可打开性"),
-      "HA 终验 prompt 应验收 Excel 跨平台可打开性",
+      buildHaFinalReviewPrompt("E2E", "验收合同", '{"status":"needs_attention"}', undefined).includes("只有 HA 可以代表用户决定真正需要人工介入"),
+      "HA 终验 prompt 应明确只有 HA 能决定用户人工介入",
     );
     assert(buildEgoPrompt("E2E", "验收合同").includes("现实执行面"), "Ego prompt 应体现心理模型中的现实执行面");
     assert(buildEgoPrompt("E2E", "验收合同").includes("实现假设清单"), "Ego prompt 应要求实现假设清单");
     assert(buildEgoPrompt("E2E", "验收合同").includes("让当前系统的形状决定实现方式"), "Ego prompt 应体现先读上下文和按现有系统推进");
-    assert(buildEgoPrompt("E2E", "验收合同").includes("合法 OOXML/ZIP"), "Ego prompt 应要求 Excel 输出做 OOXML 兼容验证");
-    assert(buildEgoPrompt("E2E", "验收合同").includes("Mac 和 Windows 都能打开"), "Ego prompt 应要求 Excel 输出兼容 Mac 和 Windows");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("不要把任务主动拆给未来轮次"), "Ego prompt 应要求本轮尽力完整交付，而不是自我安排未来轮次");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("关键路径"), "Ego prompt 应要求先识别关键路径");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("垂直闭环"), "Ego prompt 应要求优先打通可验证垂直闭环");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("不能替代闭环"), "Ego prompt 应防止目录/文档/示例替代真实能力");
     assert(!buildEgoPrompt("E2E", "验收合同").includes("mas_query_memory"), "Ego prompt 不应暴露历史经验查询工具");
     assert(!buildEgoPrompt("E2E", "验收合同").includes("mas_query_recent_activity"), "Ego prompt 不应暴露近期活动查询工具");
     assert(buildEgoPrompt("E2E", "验收合同").includes("不拥有 MAS 近期活动"), "Ego prompt 应明确全局查询工具边界");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("普通“还有文件没写完"), "Ego prompt 应禁止把普通未完成当作 needs_attention");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("内部资源压力不是用户可见理由"), "Ego prompt 应禁止用内部资源压力缩小交付范围");
+    assert(!buildEgoPrompt("E2E", "验收合同").includes("工具预算或迭代预算耗尽"), "Ego prompt 不应诱导模型猜测工具/迭代预算");
     assert(!roleToolNames("ego").includes("mas_query_memory"), "Ego 工具白名单不应包含历史经验查询工具");
     assert(!roleToolNames("ego").includes("mas_query_recent_activity"), "Ego 工具白名单不应包含近期活动查询工具");
     assert(!roleToolNames("ego").includes("mas_external_read"), "Ego 工具白名单不应包含外部读取工具");
@@ -396,8 +400,8 @@ async function autonomyStorageSmoke(): Promise<void> {
       "Superego prompt 应把扰动定义为反事实问题",
     );
     assert(
-      buildSuperegoPrompt("E2E 输出 Excel", "验收合同", "{}", {} as any).includes("异常 externalLinks"),
-      "Superego prompt 应评审 Excel 外部链接兼容风险",
+      buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("escalate 对 Superego 只表示提交给 HA 判断的升级信号"),
+      "Superego prompt 应说明 escalate 不是直接用户人工介入",
     );
     assert(
       buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("mas_query_recent_activity"),
@@ -411,6 +415,93 @@ async function autonomyStorageSmoke(): Promise<void> {
       !buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("mas_external_read"),
       "Superego prompt 不应暴露 HA 专属外部读取工具",
     );
+    assert(
+      buildSuperegoPrompt("E2E", "验收合同", "{}", {} as any).includes("不要默认要求所有任务写入 output/"),
+      "Superego prompt 应避免把 output/ 当作所有任务的默认边界",
+    );
+    writeFileSync(join(autonomyWorkspace, "package.json"), "{}");
+    store.addApproval({
+      runId: "e2e-workspace-boundary",
+      toolCallId: "write-workspace-root",
+      toolName: "write",
+      decision: "allow_always",
+      rawInput: { path: join(autonomyWorkspace, "package.json") },
+    });
+    const workspaceBoundaryAudit = buildAuditPacket(store, {
+      runId: "e2e-workspace-boundary",
+      cwd: autonomyWorkspace,
+      egoResult: {
+        status: "completed",
+        summary: "Web 应用项目源码",
+        final_response: "完成",
+        evidence: [],
+        changed_files: [join(autonomyWorkspace, "package.json")],
+        verification: [],
+        risks: [],
+      },
+      task: "开发一个 web 应用",
+      contract: "allowedOutputs: 项目源代码 frontend/backend、README.md、package.json",
+    });
+    assert(workspaceBoundaryAudit.outputBoundary.mode === "workspace_root", "未显式要求 output/ 时应允许 workspace 根目录产物");
+    assert(workspaceBoundaryAudit.currentWritesOutsideOutput.length === 0, "workspace_root 模式不应把根目录源码当作 output 外违规");
+    assert(!workspaceBoundaryAudit.findings.some((finding) => finding.category === "output_boundary"), "workspace_root 模式不应产生 output_boundary 阻塞");
+    const workspaceDiffDir = join(autonomyWorkspace, "workspace-root-diff");
+    mkdirSync(workspaceDiffDir, { recursive: true });
+    const workspaceRootBaseline = createBoundarySnapshot({
+      cwd: workspaceDiffDir,
+      task: "开发一个 web 应用",
+      contract: "allowedOutputs: 项目源代码 frontend/backend、README.md、package.json",
+    });
+    writeFileSync(join(workspaceDiffDir, "README.md"), "# app\n");
+    store.addApproval({
+      runId: "e2e-workspace-boundary-diff",
+      toolCallId: "write-workspace-root-diff",
+      toolName: "write",
+      decision: "allow_always",
+      rawInput: { path: join(workspaceDiffDir, "README.md") },
+    });
+    const workspaceBoundaryDiffAudit = buildAuditPacket(store, {
+      runId: "e2e-workspace-boundary-diff",
+      cwd: workspaceDiffDir,
+      egoResult: {
+        status: "completed",
+        summary: "Web 应用项目源码",
+        final_response: "完成",
+        evidence: [],
+        changed_files: [join(workspaceDiffDir, "README.md")],
+        verification: [],
+        risks: [],
+      },
+      boundarySnapshot: workspaceRootBaseline,
+      task: "开发一个 web 应用",
+      contract: "allowedOutputs: 项目源代码 frontend/backend、README.md、package.json",
+    });
+    assert(!workspaceBoundaryDiffAudit.findings.some((finding) => finding.category === "workspace_boundary_diff"), "workspace_root 模式下根目录新增源码不应触发 boundary diff 阻塞");
+    store.addApproval({
+      runId: "e2e-output-only-boundary",
+      toolCallId: "write-output-only-root",
+      toolName: "write",
+      decision: "allow_always",
+      rawInput: { path: join(autonomyWorkspace, "package.json") },
+    });
+    const outputOnlyAudit = buildAuditPacket(store, {
+      runId: "e2e-output-only-boundary",
+      cwd: autonomyWorkspace,
+      egoResult: {
+        status: "completed",
+        summary: "输出目录任务",
+        final_response: "完成",
+        evidence: [],
+        changed_files: [join(autonomyWorkspace, "package.json")],
+        verification: [],
+        risks: [],
+      },
+      task: "生成报告",
+      contract: "所有结果必须写入 output/ 目录",
+    });
+    assert(outputOnlyAudit.outputBoundary.mode === "output_dir", "显式要求 output/ 时应启用 output_dir 边界");
+    assert(outputOnlyAudit.currentWritesOutsideOutput.length === 1, "output_dir 模式应识别 output/ 外当前写入");
+    assert(outputOnlyAudit.findings.some((finding) => finding.category === "output_boundary"), "output_dir 模式应产生 output_boundary finding");
     assert(isReadOnlyTool("mas_query_memory"), "历史经验查询工具应被权限层识别为只读");
     assert(isReadOnlyTool("mas_query_recent_activity"), "近期活动查询工具应被权限层识别为只读");
     assert(isReadOnlyTool("mas_external_search"), "外部检索工具应被权限层识别为只读");
@@ -425,6 +516,55 @@ async function autonomyStorageSmoke(): Promise<void> {
         critique_items: [],
       }).next_action === "escalate",
       "HA 终验空壳 accept 应被门禁升级",
+    );
+    assert(
+      enforceHaFinalReviewGate(
+        {
+          blocking_issues: 0,
+          quality_score: 0.9,
+          summary: "通过",
+          next_action: "accept",
+          evidenceQuality: 0.8,
+          critique_items: [],
+        },
+        {
+          egoResult: {
+            status: "needs_attention",
+            summary: "未完成",
+            final_response: "需要继续",
+            evidence: [],
+            changed_files: [],
+            verification: [],
+            risks: [],
+          },
+        },
+      ).next_action === "revise",
+      "HA 终验不能 accept Ego 未完成状态",
+    );
+    assert(
+      routeEgoAttentionToCritique(
+        {
+          status: "needs_attention",
+          summary: "普通未完成",
+          final_response: "需要继续",
+          evidence: [],
+          changed_files: [],
+          verification: [],
+          risks: ["还缺少前端实现"],
+        },
+        1,
+      ).next_action === "revise",
+      "Ego needs_attention 应转为内部 revise 信号",
+    );
+    assert(
+      routeSuperegoReviewForOrchestration({
+        blocking_issues: 1,
+        quality_score: 0.1,
+        summary: "需要人工介入",
+        next_action: "escalate",
+        critique_items: [],
+      }).next_action === "escalate",
+      "Superego escalate 应保留为交给 HA 终验裁决的内部升级信号",
     );
     const haFinalReviewMessage = formatNeedsAttentionResult({
       headline: "HA 终验未通过：需要人工介入。",
@@ -448,7 +588,7 @@ async function autonomyStorageSmoke(): Promise<void> {
         blocking_issues: 0,
         quality_score: 0.9,
         summary: "Superego 已完成独立抽样验证。",
-        next_action: "accept",
+        next_action: "escalate",
         evidenceQuality: 0.85,
         remainingUncertainty: 0.15,
         critique_items: [],
@@ -457,6 +597,7 @@ async function autonomyStorageSmoke(): Promise<void> {
     });
     assert(haFinalReviewMessage.includes("HA 终验批注："), "终验失败消息应包含 HA 人类可读批注");
     assert(haFinalReviewMessage.includes("Superego 批注："), "终验失败消息应包含 Superego 人类可读批注");
+    assert(haFinalReviewMessage.includes("Superego 批注：\n- 结论：升级给 HA 裁决"), "Superego escalate 展示时不应写成用户人工介入");
     assert(!haFinalReviewMessage.includes("\"blocking_issues\""), "终验失败消息不应泄漏内部 JSON 字段名");
     assert(!haFinalReviewMessage.includes("{\n"), "终验失败消息不应直接展示 JSON 对象");
 

@@ -87,7 +87,7 @@ npm run e2e:smoke
 
 - 自动化测试使用 `mkdtemp` 创建临时 `MAS_HOME` 和临时工作区。
 - 不读取或写入 `~/.mas/`、真实项目输出目录或用户长期 Pi 配置。
-- 真实模型执行只允许在临时工作区运行；写入类任务必须限定 `output/`。
+- 真实模型执行只允许在临时工作区运行；写入类任务必须在验收合同中声明允许输出边界。只有报告、表格等单一产物任务默认建议限定 `output/`；greenfield 应用开发可以声明 workspace 根目录为源码产物边界。
 - 失败触发自主性用例必须使用唯一缺失输入路径，并显式要求不得创建、写入、伪造或把失败当作完成。
 - 自主性和 Dream 用例优先绑定到已完成的真实 run 或隔离 run，只写 MAS SQLite 自主性表；不得通过 Dream 写用户工作区。
 - 过程产物必须和最终产物分开断言：过程产物包括 claim、lease、audit、signal、ledger、graph node、job payload；最终产物包括 run/job/reflection 的最终状态、DreamGraphPatch、pruned 标记和可追踪 evidence。

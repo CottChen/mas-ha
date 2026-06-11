@@ -168,11 +168,19 @@ export class MasRunner {
         }
 
         if (egoResult.status === "blocked" || egoResult.status === "needs_attention") {
-          const result = `HA 终验未通过：Ego 未能完成执行。\n\n${egoResult.final_response}`;
-          this.store.updateRun(runId, "needs_attention", { result, egoResult, orchestrationMode: mode.id });
-          this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, reason: egoResult.status });
-          sink.done(result);
-          return { runId, result };
+          const attentionCritique = routeEgoAttentionToCritique(egoResult, iteration);
+          this.store.audit({
+            runId,
+            actor: "system",
+            action: "ego_attention_routed_to_review",
+            payload: {
+              iteration,
+              egoStatus: egoResult.status,
+              summary: egoResult.summary,
+              internalCritique: attentionCritique,
+            },
+          });
+          critique = attentionCritique;
         }
 
         if (!mode.usesSuperego) {
@@ -241,15 +249,23 @@ export class MasRunner {
             sourceRefs: [`run:${runId}:audit_packet`],
           });
           reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2), auditPacket, this.perturbations.render(perturbation)));
-          critique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration);
-          critique = enforceAuditGate(critique, auditPacket);
+          const rawCritique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration);
+          critique = routeSuperegoReviewForOrchestration(enforceAuditGate(rawCritique, auditPacket), egoResult);
+          if (critique.next_action !== rawCritique.next_action || critique.summary !== rawCritique.summary) {
+            this.store.audit({
+              runId,
+              actor: "system",
+              action: "superego_accept_routed_to_revise",
+              payload: { iteration, rawCritique, routedCritique: critique },
+            });
+          }
           this.store.addAgentRun({
             runId,
             role: "superego",
             iteration,
             status: "completed",
             input: { prompt, task, contract, auditPacket, contextInjection, perturbation: summarizePerturbation(perturbation) },
-            output: { text: reviewText, critique },
+            output: { text: reviewText, critique, rawCritique },
           });
           this.store.addEvent({
             runId,
@@ -268,15 +284,35 @@ export class MasRunner {
 
         emitStage(sink, `Superego 结论：${critique.summary || critique.next_action}`);
         if (critique.next_action === "escalate") {
-          const result = formatNeedsAttentionResult({
-            headline: "HA 终验未通过：Superego 要求人工介入。",
-            superegoReview: critique,
-            egoOutput: finalEgoOutput,
+          this.store.audit({
+            runId,
+            actor: "system",
+            action: "superego_escalation_sent_to_ha",
+            payload: { iteration, critique },
           });
-          this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
-          this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique, reason: "superego_escalate" });
-          sink.done(result);
-          return { runId, result };
+          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection);
+          emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (haFinalReview.next_action === "escalate") {
+            const result = formatNeedsAttentionResult({
+              headline: "HA 终验未通过：需要人工介入。",
+              haFinalReview,
+              superegoReview: critique,
+              egoOutput: finalEgoOutput,
+            });
+            this.store.updateRun(runId, "needs_attention", { result, critique, egoResult, haFinalReview });
+            this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique: haFinalReview, reason: "ha_final_escalate" });
+            sink.done(result);
+            return { runId, result };
+          }
+          if (haFinalReview.next_action === "accept" && haFinalReview.blocking_issues === 0) {
+            const result = `HA 终验通过。\n\n${finalEgoOutput}`;
+            this.store.updateRun(runId, "completed", { result, critique, egoResult, haFinalReview });
+            this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "completed", result, egoResult, critique: haFinalReview, reason: "ha_final_accept" });
+            sink.done(result);
+            return { runId, result };
+          }
+          critique = haFinalReview;
+          continue;
         }
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection);
@@ -313,13 +349,24 @@ export class MasRunner {
         }
       }
 
+      const haFinalReview = egoResult
+        ? await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, options.maxIterations, contextInjection)
+        : undefined;
+      if (haFinalReview?.next_action === "accept" && haFinalReview.blocking_issues === 0) {
+        const result = `HA 终验通过。\n\n${finalEgoOutput}`;
+        this.store.updateRun(runId, "completed", { result, critique, egoResult, haFinalReview });
+        this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "completed", result, egoResult, critique: haFinalReview, reason: "ha_final_accept_after_max_iterations" });
+        sink.done(result);
+        return { runId, result };
+      }
       const result = formatNeedsAttentionResult({
         headline: "HA 终验未通过：达到最大返工轮次。",
+        haFinalReview,
         superegoReview: critique,
         egoOutput: finalEgoOutput,
       });
-      this.store.updateRun(runId, "needs_attention", { result, critique, egoResult });
-      this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique, reason: "max_iterations" });
+      this.store.updateRun(runId, "needs_attention", { result, critique, egoResult, haFinalReview });
+      this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique: haFinalReview ?? critique, reason: "max_iterations" });
       this.store.addEvent({
         runId,
         sessionId,
@@ -724,7 +771,7 @@ export class MasRunner {
       const reviewText = await ha.prompt(
         buildHaFinalReviewPrompt(task, contract, JSON.stringify(egoResult, null, 2), superegoCritique, this.perturbations.render(perturbation)),
       );
-      const review = enforceHaFinalReviewGate(await this.parseHaFinalReviewWithRepair(reviewText, ha, prompt, task, contract, runId, iteration));
+      const review = enforceHaFinalReviewGate(await this.parseHaFinalReviewWithRepair(reviewText, ha, prompt, task, contract, runId, iteration), { egoResult });
       this.store.addAgentRun({
         runId,
         role: "ha",
@@ -812,7 +859,27 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error("MAS run 已取消");
 }
 
-export function enforceHaFinalReviewGate(review: CritiqueResult): CritiqueResult {
+export function enforceHaFinalReviewGate(review: CritiqueResult, context?: { egoResult?: EgoResult }): CritiqueResult {
+  if (review.next_action === "accept" && context?.egoResult && context.egoResult.status !== "completed") {
+    return {
+      ...review,
+      blocking_issues: Math.max(review.blocking_issues, 1),
+      quality_score: Math.min(review.quality_score, 0.4),
+      summary: review.summary.trim() || `Ego 当前状态为 ${context.egoResult.status}，HA 不能把未完成执行验收为通过。`,
+      next_action: "revise",
+      evidenceQuality: review.evidenceQuality ?? 0,
+      remainingUncertainty: Math.max(review.remainingUncertainty ?? 0, 0.7),
+      nextBestObservation: review.nextBestObservation?.trim() || "要求 Ego 基于当前阻塞说明继续推进；只有 HA 确认确实需要用户输入时才升级人工介入。",
+      critique_items: [
+        ...review.critique_items,
+        {
+          category: "ha_final_review_gate",
+          severity: "high",
+          suggestion: "Ego/Superego 的 needs_attention 或 blocked 只是内部状态信号；HA 必须从用户视角判断应返工还是确实需要用户介入，不能直接 accept 未完成结果。",
+        },
+      ],
+    };
+  }
   if (review.next_action !== "accept") return review;
   const evidenceQuality = review.evidenceQuality ?? 0;
   const hasSummary = review.summary.trim().length > 0;
@@ -837,6 +904,55 @@ export function enforceHaFinalReviewGate(review: CritiqueResult): CritiqueResult
   };
 }
 
+export function routeEgoAttentionToCritique(egoResult: EgoResult, iteration: number): CritiqueResult {
+  return {
+    blocking_issues: 1,
+    quality_score: 0,
+    summary: `Ego 第 ${iteration} 轮上报 ${egoResult.status}：${egoResult.summary || "未提供摘要"}。该信号只作为内部返工依据，不等同于用户需要人工介入。`,
+    next_action: "revise",
+    entropyDelta: "unknown",
+    evidenceQuality: 0,
+    remainingUncertainty: 1,
+    nextBestObservation: "让 Ego 继续推进可自动处理的部分，并把真正需要用户确认的外部缺口具体化；最终是否人工介入由 HA 终验决定。",
+    critique_items: [
+      {
+        category: "ego_attention_signal",
+        severity: "high",
+        suggestion: `Ego 状态为 ${egoResult.status}。如果缺口不是用户输入、外部凭据、审批拒绝或硬环境限制，应继续执行而不是停止。`,
+      },
+      ...egoResult.risks.slice(0, 6).map((risk) => ({
+        category: "ego_reported_risk",
+        severity: "medium" as const,
+        suggestion: risk,
+      })),
+    ],
+  };
+}
+
+export function routeSuperegoReviewForOrchestration(review: CritiqueResult, egoResult?: EgoResult): CritiqueResult {
+  if (review.next_action === "accept" && egoResult && egoResult.status !== "completed") {
+    return {
+      ...review,
+      blocking_issues: Math.max(review.blocking_issues, 1),
+      quality_score: Math.min(review.quality_score, 0.3),
+      summary: `Superego 不能接受 Ego 的未完成状态：${egoResult.status}。${review.summary}`.trim(),
+      next_action: "revise",
+      evidenceQuality: Math.min(review.evidenceQuality ?? 0, 0.3),
+      remainingUncertainty: Math.max(review.remainingUncertainty ?? 0, 0.8),
+      nextBestObservation: review.nextBestObservation?.trim() || "要求 Ego 继续完成缺失交付并补充验证证据。",
+      critique_items: [
+        ...review.critique_items,
+        {
+          category: "non_completed_ego_accept",
+          severity: "high",
+          suggestion: "Ego 仍处于 blocked/needs_attention 时，Superego 不能把内部求助信号升级成通过；应转为返工要求。",
+        },
+      ],
+    };
+  }
+  return review;
+}
+
 export function formatNeedsAttentionResult(input: {
   headline: string;
   haFinalReview?: CritiqueResult;
@@ -854,7 +970,7 @@ export function formatNeedsAttentionResult(input: {
 function formatCritiqueForUser(title: string, critique: CritiqueResult): string {
   const lines = [
     `${title}：`,
-    `- 结论：${formatAction(critique.next_action)}`,
+    `- 结论：${formatAction(critique.next_action, title)}`,
     `- 阻塞问题：${critique.blocking_issues}`,
     `- 质量分：${formatScore(critique.quality_score)}`,
     `- 证据质量：${formatScore(critique.evidenceQuality)}`,
@@ -870,9 +986,10 @@ function formatCritiqueForUser(title: string, critique: CritiqueResult): string 
   return lines.join("\n");
 }
 
-function formatAction(action: CritiqueResult["next_action"]): string {
+function formatAction(action: CritiqueResult["next_action"], title = ""): string {
   if (action === "accept") return "通过";
   if (action === "revise") return "需要返工";
+  if (!title.startsWith("HA")) return "升级给 HA 裁决";
   return "需要人工介入";
 }
 

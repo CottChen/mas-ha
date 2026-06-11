@@ -77,6 +77,8 @@ try {
         runId,
         cwd,
         egoResult: egoResult(item.changedFiles),
+        task: "生成数据表报告",
+        contract: "所有结果必须写入 output/ 目录。",
       });
       const gated = enforceAuditGate(baseCritique(), audit);
       assert(

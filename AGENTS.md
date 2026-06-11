@@ -140,7 +140,11 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - Pi 适配层只负责创建 Pi session、映射事件、拦截工具权限，不承担 HA / Ego / Superego 决策。
 - 编排逻辑放在 `src/core/`，保持状态机显式、可测试。
 - HA / Ego / Superego 的内部结构化输出应优先使用 Pi SDK typed tool，MAS 侧必须保留业务 schema 校验和 repair prompt 兜底。
-- HA 是人类助理层，只负责面向用户接收任务、澄清和汇报；后台自主性机制不应由 HA 驱动。
+- MAS 框架负责确定性保障：角色隔离、状态机语义、工具权限、typed tool schema、repair prompt、AuditPacket、允许输出边界推断、snapshot/diff、事件审计和最大轮次控制；这些不能依赖模型自觉遵守。
+- Prompt 负责塑造稳定工作人格和判断倾向，不承担确定性框架职责。写 prompt 应学习 Codex 风格：先定义身份、判断气质和默认品味，再定义工具纪律、证据标准和收口方式；避免用零散禁令或单一 bug 补丁堆成 SOP。
+- 基础 prompt 只写可泛化原则，例如先读上下文、抵抗轻率假设、贴合现有系统、追求真实交付、证据高于自报、关键口径高于表面结构。Excel/Office 兼容、特定文件格式、特定业务案例等领域细节应通过技能或任务上下文按需注入，不写进系统级基础 prompt。
+- 编排语义不能被 prompt 或框架偷偷改写：Ego 应在本轮尽力完成任务；返工由 Superego/HA 的 `revise` 驱动；Ego 的 `needs_attention/blocked` 和 Superego 的 `escalate` 只是内部未完成或升级信号，不能直接结束为用户人工介入。
+- HA 是人类助理层，只负责面向用户接收任务、澄清、验收和汇报；只有 HA 终验可以把 run 结束为真正需要用户人工介入。后台自主性机制不应由 HA 驱动。
 - Ego / Superego / Id-Dream 负责 MAS 内部自主性：Ego 记录任务过程和结果，Superego 生成与裁剪反思意图，Dream 在低权限、低规约模式下重组 Experience Graph。
 - Experience Graph 是 MAS 长期自主性的核心记忆结构，应串联任务、执行过程、结果、经验、反思和 Dream 裁剪；反思可以递归，但必须受能量预算、拓扑约束和审计约束控制。
 - MAS 自主性调度必须跨会话、全局单实例运行；推荐入口是 `mas autonomy daemon`，通过 SQLite scheduler lease 和任务 claim 避免多个 AionUI 会话重复处理同一任务。
@@ -149,7 +153,7 @@ Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。Das
 - HA 拥有 `mas_external_search` 只读外部检索工具和 `mas_external_read` 只读外部 URL 读取工具，用于引入公开证据候选并核对来源原文；Ego 不应获得 MAS 记忆、近期活动、外部检索或外部读取工具，避免执行层扩大任务边界。
 - Superego 拥有工作区只读工具和自动授权 `bash`，用于系统审计和只读抽样复算；`bash` 只允许用于只读验证，不允许执行有副作用的命令，所有调用仍进入审计记录。
 - Superego 本身是系统审计视角的 Critic/Judge；如需异质强模型必须通过 `MAS_SUPEREGO_MODEL` 显式配置，未配置时不探测其他模型，直接回退 Pi 默认模型。
-- Superego 默认验收策略是当前状态门禁 + 历史事实留痕：当前仍存在的 `output` 目录外写入、只读输入路径写入或失败验证伪装为成功时必须阻塞；历史已清理的越界写入和 `changed_files` 漏报必须留痕，但不单独作为永久阻塞。
+- Superego 默认验收策略是当前状态门禁 + 历史事实留痕：当前仍违反用户任务或 HA 验收合同声明的允许输出边界、只读输入路径写入或失败验证伪装为成功时必须阻塞；历史已清理的越界写入和 `changed_files` 漏报必须留痕，但不单独作为永久阻塞。
 - Superego 抽样复核应采用分层风险抽样 + 少量随机扰动；snapshot/diff 只能做边界目录轻量元数据 diff + 风险触发深查，不能默认全量重审计。
 - HA 生成验收合同时必须声明只读输入、允许输出和工作目录边界；baseline snapshot 由 MAS 框架层在 Ego 执行前生成，不能依赖 Ego 自报。
 - Dream 模式允许操作 Experience Graph，但不允许执行外部工具、写用户工作区、创建新嵌套反思或直接向用户发送任务结果。

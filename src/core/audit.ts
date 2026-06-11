@@ -14,6 +14,7 @@ export function buildAuditPacket(
 ): AuditPacket {
   const cwd = normalizePath(input.cwd);
   const outputDir = normalizePath(resolve(input.cwd, "output"));
+  const outputBoundary = inferOutputBoundary({ cwd, outputDir, task: input.task ?? "", contract: input.contract ?? "" });
   const approvals = store.listApprovals(input.runId);
   const writes = approvals.flatMap((approval) =>
     extractWritePaths(approval.rawInput).map((path) => {
@@ -22,7 +23,7 @@ export function buildAuditPacket(
         toolCallId: approval.toolCallId,
         toolName: approval.toolName,
         path: normalized,
-        inOutputDir: isSubPath(normalized, outputDir),
+        inOutputDir: isInOutputBoundary(normalized, outputBoundary),
         inCwd: isSubPath(normalized, cwd),
         inReadOnlyInput: isReadOnlyInputPath(normalized),
       };
@@ -36,7 +37,7 @@ export function buildAuditPacket(
       toolCallId: item.toolCallId,
       command: String(item.command),
       ...effect,
-      inOutputDir: isSubPath(effect.path, outputDir),
+      inOutputDir: isInOutputBoundary(effect.path, outputBoundary),
       inCwd: isSubPath(effect.path, cwd),
       inReadOnlyInput: isReadOnlyInputPath(effect.path),
     })),
@@ -48,7 +49,7 @@ export function buildAuditPacket(
   const writesToReadOnlyInputs = writes.filter((write) => write.inReadOnlyInput).map((write) => write.path);
   const currentWritesToReadOnlyInputs = writes.filter((write) => write.inReadOnlyInput && existsSync(write.path)).map((write) => write.path);
   const boundaryDiff = input.boundarySnapshot
-    ? diffBoundarySnapshot(input.boundarySnapshot, createBoundarySnapshot({ cwd: input.cwd, task: input.task ?? "", contract: input.contract ?? "" }))
+    ? diffBoundarySnapshot(input.boundarySnapshot, createBoundarySnapshot({ cwd: input.cwd, task: input.task ?? "", contract: input.contract ?? "" }), outputBoundary)
     : undefined;
   const findings = buildFindings({
     unreportedWrites,
@@ -63,12 +64,13 @@ export function buildAuditPacket(
   return {
     cwd,
     outputDir,
+    outputBoundary,
     suggestedSamplingStrategy: buildSuggestedSamplingStrategy(input.egoResult),
     boundaryDiffPolicy: {
       mode: "lightweight_boundary_metadata",
       rules: [
         "默认不做全量工作区重审计，也不读取全部文件内容。",
-        "优先对用户声明的只读输入边界、output 输出边界和已知写入路径做轻量元数据对账。",
+        "优先对用户声明的只读输入边界、当前输出边界和已知写入路径做轻量元数据对账。",
         "只有出现命令副作用、审计矛盾、返工失败或高风险数据任务时，才触发更深的 hash 或内容级检查。",
       ],
     },
@@ -85,6 +87,32 @@ export function buildAuditPacket(
     boundaryDiff,
     findings,
   };
+}
+
+function inferOutputBoundary(input: { cwd: string; outputDir: string; task: string; contract: string }): AuditPacket["outputBoundary"] {
+  const combined = `${input.task}\n${input.contract}`;
+  const explicitOutputOnly = [
+    /\boutput[\\/]/i,
+    /output\s*(目录|文件夹|子目录)/i,
+    /(只|仅|必须).{0,20}(output|输出目录|输出文件夹)/i,
+    /(输出|产物).{0,20}(必须|只|仅).{0,20}(output|输出目录|输出文件夹)/i,
+  ].some((pattern) => pattern.test(combined));
+  if (explicitOutputOnly) {
+    return {
+      mode: "output_dir",
+      reason: "用户任务或验收合同显式要求产物写入 output/ 或输出目录。",
+      allowedRoots: [input.outputDir],
+    };
+  }
+  return {
+    mode: "workspace_root",
+    reason: "用户任务或验收合同未要求 output/ 子目录；greenfield 项目源码、文档和配置允许写在 workspace 根目录内。",
+    allowedRoots: [input.cwd],
+  };
+}
+
+function isInOutputBoundary(path: string, boundary: AuditPacket["outputBoundary"]): boolean {
+  return boundary.allowedRoots.some((root) => isSubPath(path, root));
 }
 
 export function enforceAuditGate(critique: import("../types.js").CritiqueResult, audit: AuditPacket): import("../types.js").CritiqueResult {
@@ -129,7 +157,7 @@ function buildFindings(input: {
     findings.push({
       category: "output_boundary",
       severity: "high",
-      message: "当前文件系统仍存在 output 目录外写入，违反当前工作目录 output 子目录输出边界。",
+      message: "当前文件系统仍存在允许输出边界外写入，违反 auditPacket.outputBoundary 声明。",
       evidence: unique(input.currentWritesOutsideOutput),
     });
   }
@@ -137,7 +165,7 @@ function buildFindings(input: {
     findings.push({
       category: "historical_output_boundary",
       severity: "medium",
-      message: "历史审计记录中存在 output 目录外写入，但当前状态可能已清理；默认留痕，不作为当前状态门禁的唯一阻塞证据。",
+      message: "历史审计记录中存在允许输出边界外写入，但当前状态可能已清理；默认留痕，不作为当前状态门禁的唯一阻塞证据。",
       evidence: unique(input.writesOutsideOutput.filter((path) => !input.currentWritesOutsideOutput.some((current) => samePath(current, path)))),
     });
   }
@@ -170,7 +198,7 @@ function buildFindings(input: {
       findings.push({
         category: "workspace_boundary_diff",
         severity: "high",
-        message: "边界目录轻量元数据 diff 发现工作目录根层存在 output 外新增或修改。",
+        message: "边界目录轻量元数据 diff 发现工作目录根层存在允许输出边界外新增或修改。",
         evidence: unique([...input.boundaryDiff.suspiciousCreatedOutsideOutput, ...input.boundaryDiff.suspiciousModifiedOutsideOutput]),
       });
     }
@@ -178,7 +206,7 @@ function buildFindings(input: {
       findings.push({
         category: "workspace_boundary_deleted",
         severity: "medium",
-        message: "边界目录轻量元数据 diff 发现工作目录根层存在 output 外删除，默认留痕并交由 Superego 判断风险。",
+        message: "边界目录轻量元数据 diff 发现工作目录根层存在允许输出边界外删除，默认留痕并交由 Superego 判断风险。",
         evidence: unique(input.boundaryDiff.suspiciousDeletedOutsideOutput),
       });
     }
@@ -279,7 +307,7 @@ function snapshotScope(scope: { kind: BoundaryScopeKind; path: string; depth: nu
   };
 }
 
-function diffBoundarySnapshot(before: BoundarySnapshot, after: BoundarySnapshot): BoundaryDiff {
+function diffBoundarySnapshot(before: BoundarySnapshot, after: BoundarySnapshot, outputBoundary: AuditPacket["outputBoundary"]): BoundaryDiff {
   const scopes = after.scopes.map((afterScope) => {
     const beforeScope = before.scopes.find((scope) => scope.kind === afterScope.kind && samePath(scope.path, afterScope.path));
     const beforeMap = new Map((beforeScope?.entries ?? []).map((entry) => [entry.path, entry]));
@@ -305,8 +333,7 @@ function diffBoundarySnapshot(before: BoundarySnapshot, after: BoundarySnapshot)
   const readonlyScopes = scopes.filter((scope) => scope.kind === "readonly_input");
   const outputScopes = scopes.filter((scope) => scope.kind === "output");
   const workspaceScopes = scopes.filter((scope) => scope.kind === "workspace_root");
-  const outputPaths = outputScopes.map((scope) => scope.path);
-  const isOutsideOutput = (path: string) => !outputPaths.some((outputPath) => isSubPath(path, outputPath));
+  const isOutsideOutput = (path: string) => !isInOutputBoundary(path, outputBoundary);
   return {
     baselineAt: before.createdAt,
     comparedAt: after.createdAt,

@@ -23,7 +23,7 @@ MAS 的核心不是多个模型轮流发言，而是让不同角色持有不同�
 | Superego | 系统审计 Critic/Judge，负责基于 AuditPacket、只读检查和历史风险评审 Ego 输出 | AuditPacket、只读工作区检查、MAS 记忆/近期活动、自动授权 `bash` 只读复算、`superego_review` |
 | Id / Dream | 低权限经验重组和裁剪 | 只操作 Experience Graph，不写用户工作区，不执行外部工具 |
 
-HA 和 Superego 都是 Critic，但视角不同：HA 代表用户验收交付价值和真实意图，Superego 代表系统审计边界和证据一致性。
+HA 和 Superego 都是 Critic，但视角不同：HA 代表用户验收交付价值和真实意图，Superego 代表系统审计边界和证据一致性。只有 HA 终验可以把 run 结束为真正需要用户人工介入；Ego 的 `needs_attention/blocked` 和 Superego 的 `escalate` 都只是内部未完成或升级信号。
 
 AionUI 中会展示 HA、Ego、Superego 的流式文本、思考、工具调用和工具返回，工具标题带角色前缀，便于用户追踪组织协作过程。展示层不等于上下文层：MAS 只把用户消息和最终 MAS 结果写入会话记忆；HA、Ego、Superego 的 Pi session 彼此隔离，后续角色只能看到 MAS 框架显式注入给它的任务、验收合同、Ego 输出、Superego 评审、AuditPacket、会话摘要或工具查询结果。
 
@@ -41,6 +41,8 @@ Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执
 6. Ego 按验收合同执行任务，提交 `ego_result`。
 7. Superego 基于 Ego 结果和 AuditPacket 做系统审计评审。
 8. HA 基于用户意图、Ego 结果、Superego 结论、只读抽样和必要外部检索做最终验收。
+
+Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结束为人工介入，而是把它转成内部返工/验收信号。Superego 如果返回 `escalate`，MAS 也不会直接结束，而是先交给 HA 终验裁决；只有 HA 确认需要用户补充需求、确认取舍、提供外部凭据/权限，或系统轮次上限耗尽且无自动推进路径时，run 才进入用户可见的 `needs_attention`。
 9. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
 10. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
 
@@ -92,11 +94,11 @@ Superego 不能只依赖 Ego 自报。MAS 在评审前构造 AuditPacket，包�
 - 写入路径和命令摘要。
 - Ego 自报 `changed_files`。
 - 写入路径与 `changed_files` 对账。
-- 输出边界和只读输入边界的当前状态与历史留痕。
+- 用户/验收合同声明的允许输出边界和只读输入边界的当前状态与历史留痕。
 - 边界目录轻量 metadata snapshot/diff。
 - 面向 Superego 的只读抽样复核建议。
 
-确定性审计门禁高于模型输出。当前仍存在输出边界违规、只读输入污染或失败验证伪装成功时，即使模型评审返回 `accept`，MAS 也会强制进入 `revise` 或 `escalate`。
+确定性审计门禁高于模型输出。当前仍存在违反允许输出边界、只读输入污染或失败验证伪装成功时，即使模型评审返回 `accept`，MAS 也会强制进入内部 `revise` 或升级信号；真正面向用户的人工介入必须由 HA 终验决定。允许输出边界来自用户任务和 HA 验收合同；未显式要求 `output/` 时，greenfield 项目源码、文档和配置可以写在 workspace 根目录内。
 
 ## 存储与会话
 
