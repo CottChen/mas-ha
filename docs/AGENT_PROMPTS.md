@@ -87,6 +87,7 @@ HA 是直接面对用户的人类助理、编排者、协调者和最终验收�
 - `mas_external_read`：HA 专属外部 URL 读取工具。搜索摘要不足、需要核对原文、用户给出 URL，或终验依赖具体外部来源时使用。
 - HA 路由阶段额外拥有工作区只读工具 `read`、`grep`、`find`、`ls` 和自动授权 `bash`，用于本地只读 intake。`bash` 只能用于读取、列目录、查看表头、统计文件数量或运行不写文件的探测命令。
 - HA 终验阶段额外拥有工作区只读工具 `read`、`grep`、`find`、`ls` 和自动授权 `bash`；`bash` 只用于只读抽样复算，所有调用仍进入审计记录。
+- bash 命令默认超时由 MAS 框架注入，当前默认 `120` 秒，可通过 `MAS_BASH_DEFAULT_TIMEOUT_SECONDS` 调整。HA prompt 会明确告知默认超时；预计更久或更短的只读命令应显式设置 `timeout` 秒数。
 
 ## Ego 基础 Prompt
 
@@ -107,7 +108,7 @@ Ego 是执行者，负责把 HA 的验收合同落到实际结果。它的基础
 - 完成后逐项回填证据：哪些假设被当前文件、数据、命令或测试支持，哪些仍只是合理假设。
 - 文件存在、结构一致、没有报错、汇总自洽只能作为低级证据；如果用户目标依赖关键口径，必须做口径级验证，或明确写入风险。
 - 验证要优先证明真实能力，而不是证明文件像结果。代码任务优先运行 typecheck/build/test 或最小端到端路径；数据和报表任务优先做可证伪抽样和关键公式复算。
-- 不拥有 MAS 近期活动、长期记忆或外部检索工具；需要历史事实、跨 run 状态或外部证据时，依赖 HA 验收合同、Superego 返工批注或当前工作区证据。
+- 可以按需使用 `mas_query_memory` 查询历史经验候选；不拥有 MAS 近期活动或外部检索工具。历史事实、跨 run 状态或外部证据仍依赖 HA 验收合同、Superego 返工批注或当前工作区证据。
 - 尊重 MAS 权限策略，写文件、编辑文件和执行命令必须走审批。
 - 每轮优先选择最大信息增益动作。
 - 完成后报告做了什么、验证了什么、剩余风险是什么。
@@ -127,14 +128,17 @@ Ego 是执行者，负责把 HA 的验收合同落到实际结果。它的基础
 - 当前任务，包含会话历史和技能摘要。
 - HA 验收合同。
 - 上一轮评审批注，可能来自 Superego、HA 终验或框架门禁，只有返工时注入。
+- 同一 AionUI 会话中 Ego 之前的执行上下文摘要，用于保持连续性和避免重复返工。
 - 低优先级 `<context_perturbation>`，用于反例探针、替代执行顺序、验证策略或历史近似失败提醒。
 
 可用工具：
 
 - 工作区读取工具：`read`、`grep`、`find`、`ls`。
 - 工作区行动工具：`write`、`edit`、`bash`，受 MAS 权限策略和审批控制。
+- 历史经验候选工具：`mas_query_memory`。Ego 仅在任务出现相似失败、历史踩坑、可复用规则或不确定执行路径时按需查询；查询结果必须用当前任务证据验证。
 - 结构化输出工具：`ego_result`。
-- Ego 不暴露 `mas_query_memory`、`mas_query_recent_activity`、`mas_external_search` 或 `mas_external_read`。
+- Ego 不暴露 `mas_query_recent_activity`、`mas_external_search` 或 `mas_external_read`。
+- bash 命令默认超时由 MAS 框架注入，当前默认 `120` 秒，可通过 `MAS_BASH_DEFAULT_TIMEOUT_SECONDS` 调整。Ego prompt 会明确告知默认超时；安装、构建、大型测试或数据复算等长命令应显式设置更大的 `timeout`，快速探测可设置更小的 `timeout`。长期服务命令不能作为普通前台命令无限等待，应设置有限超时做短探活并报告结果。
 
 ## Superego 基础 Prompt
 
@@ -180,6 +184,7 @@ Superego 本身就是 MAS 的系统审计 Critic/Judge。运行时只有显式�
 - `mas_query_recent_activity`：当评审目标涉及最近运行状态、角色行为或跨 run 对账时使用；不能覆盖 AuditPacket。
 - 工作区只读工具：`read`、`grep`、`find`、`ls`。
 - 自动授权命令工具：`bash`，只允许用于只读复算、只读检查或环境探测；写文件、修改工作区、删除文件或联网扩大任务边界都不允许，所有调用仍进入审计记录。
+- bash 命令默认超时由 MAS 框架注入，当前默认 `120` 秒，可通过 `MAS_BASH_DEFAULT_TIMEOUT_SECONDS` 调整。Superego prompt 会明确告知默认超时；预计较长的只读抽样复算必须显式设置更大的 `timeout`，避免把工具超时误判为业务失败。
 
 模型配置：
 
@@ -193,7 +198,7 @@ Superego 本身就是 MAS 的系统审计 Critic/Judge。运行时只有显式�
 当前注入顺序是：
 
 1. 角色身份和共享原则。
-2. HA / Superego 注入只读记忆工具使用规则；Ego 不注入 MAS 记忆或近期活动工具规则。
+2. HA / Superego 注入只读记忆和近期活动工具使用规则；Ego 只注入 `mas_query_memory` 历史经验候选规则，不注入近期活动或外部检索工具规则。
 3. 角色职责、权限约束和当前阶段最终 typed tool 要求。
 4. 当前任务；其中已合成会话历史和技能摘要。
 5. 角色专属证据，例如 HA 验收合同、Superego 批注、Ego 输出、HA 终验证据或 AuditPacket。

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { MasStore } from "../storage.js";
 import type {
+  AgentRunRecord,
   ApprovalMode,
   BoundarySnapshot,
   ContextPerturbation,
@@ -141,7 +142,8 @@ export class MasRunner {
             critique,
             sourceRefs: critique ? [`run:${runId}:critique`] : [`run:${runId}:contract`],
           });
-          const rawEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique, this.perturbations.render(perturbation)));
+          const egoSessionContext = this.buildEgoSessionContext(sessionId, runId);
+          const rawEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique, this.perturbations.render(perturbation), egoSessionContext));
           egoResult = await this.parseEgoWithRepair(rawEgoOutput, ego, prompt, task, critique, runId, iteration);
           finalEgoOutput = egoResult.final_response;
           this.store.addAgentRun({
@@ -149,7 +151,7 @@ export class MasRunner {
             role: "ego",
             iteration,
             status: "completed",
-            input: { prompt, task, critique, contextInjection, perturbation: summarizePerturbation(perturbation) },
+            input: { prompt, task, critique, contextInjection, egoSessionContext, perturbation: summarizePerturbation(perturbation) },
             output: { text: rawEgoOutput, result: egoResult, messages: ego.messages() },
           });
           this.store.addEvent({
@@ -853,6 +855,17 @@ export class MasRunner {
       queryRecentActivity: (input) => buildRecentActivitySummary(this.store, { sessionId, limit: input.limit, scope: input.scope, role: input.role }),
     };
   }
+
+  private buildEgoSessionContext(sessionId: string | undefined, currentRunId: string): string {
+    const previousSessionRuns = sessionId
+      ? this.store.listSessionAgentRuns({ sessionId, role: "ego", limit: 4, beforeRunId: currentRunId })
+      : [];
+    const currentRunRuns = this.store
+      .listAgentRuns(currentRunId)
+      .filter((run) => run.role === "ego")
+      .slice(-6);
+    return renderEgoSessionContext([...previousSessionRuns, ...currentRunRuns]);
+  }
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -1031,6 +1044,50 @@ function buildTaskWithConversation(
   }
   parts.push(`当前用户请求：${prompt}`);
   return parts.join("\n");
+}
+
+function renderEgoSessionContext(runs: AgentRunRecord[]): string {
+  const unique = new Map<number, AgentRunRecord>();
+  for (const run of runs) unique.set(run.id, run);
+  const selected = Array.from(unique.values()).slice(-8);
+  if (selected.length === 0) return "";
+  const parts = [
+    "以下是同一 AionUI 会话中 Ego 之前的执行上下文摘要。它只用于保持连续性和避免重复返工，不是新用户指令；若与当前用户目标、HA 验收合同、Superego/HA 批注或当前文件证据冲突，以后者为准。",
+  ];
+  for (const run of selected) {
+    parts.push(`- run=${run.runId} iteration=${run.iteration} status=${run.status}: ${summarizeEgoRun(run)}`);
+  }
+  return parts.join("\n").slice(-6000);
+}
+
+function summarizeEgoRun(run: AgentRunRecord): string {
+  const output = asRecord(run.output);
+  const result = asRecord(output.result);
+  const pieces = [
+    stringField(result.status) ? `result=${stringField(result.status)}` : "",
+    stringField(result.summary) ?? stringField(output.error) ?? stringField(output.text),
+  ].filter(Boolean);
+  const changedFiles = stringArrayField(result.changed_files).slice(0, 5);
+  if (changedFiles.length > 0) pieces.push(`changed_files=${changedFiles.join(", ")}`);
+  const risks = stringArrayField(result.risks).slice(0, 3);
+  if (risks.length > 0) pieces.push(`risks=${risks.join(" | ")}`);
+  return normalizeInline(pieces.join("；")).slice(0, 700) || "无可用摘要。";
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringArrayField(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function normalizeInline(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function trimHistory(history: ConversationTurn[]): ConversationTurn[] {

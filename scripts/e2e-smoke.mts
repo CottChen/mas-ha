@@ -72,6 +72,7 @@ function cliSmoke(): void {
 }
 
 async function acpSmoke(): Promise<void> {
+  let sessionId = "";
   const client = startAcp(["--experimental-acp", "--approve-all", "--approval-mode-policy", "mutable", "--orchestration-mode", "ha-ego-superego"]);
   try {
     const initialized = await client.request("initialize", {});
@@ -79,9 +80,10 @@ async function acpSmoke(): Promise<void> {
     assert(initialized.capabilities?.sessionCapabilities?.prompt === true, "initialize 应声明 prompt 能力");
 
     const session = await client.request("session/new", { cwd: workspace, orchestrationMode: "ha-ego" });
-    const sessionId = String(session.sessionId);
+    sessionId = String(session.sessionId);
     assert(session.currentModeId === "bypassPermissions", "approve-all 初始模式应映射为 bypassPermissions");
-    assert(session.configOptions?.[0]?.value === "ha-ego", "session/new 应采用请求的编排模式");
+    assert(session.modes?.currentModeId === "bypassPermissions", "session/new 应返回标准 ACP modes 状态");
+    assert(session.configOptions?.[0]?.currentValue === "ha-ego", "session/new 应采用请求的编排模式");
     assert(typeof session.models?.currentModelId === "string" && session.models.currentModelId.length > 0, "session/new 应返回 Pi 当前模型");
     assert(Array.isArray(session.models?.availableModels), "session/new 应返回 Pi 可用模型列表");
     assert(
@@ -126,8 +128,8 @@ async function acpSmoke(): Promise<void> {
     const mode = await client.request("session/set_mode", { sessionId, modeId: "default" });
     assert(mode.currentModeId === "default", "mutable 策略下 set_mode default 应生效");
 
-    const config = await client.request("session/set_config_option", { sessionId, optionId: "orchestrationMode", value: "ha-ego-superego" });
-    assert(config.configOptions?.[0]?.value === "ha-ego-superego", "set_config_option 应切换编排模式");
+    const config = await client.request("session/set_config_option", { sessionId, configId: "orchestrationMode", value: "ha-ego-superego" });
+    assert(config.configOptions?.[0]?.currentValue === "ha-ego-superego", "set_config_option 应切换编排模式");
 
     const goalPrompt = await client.request("session/prompt", { sessionId, prompt: "/goal set ACP smoke 目标" });
     assert(goalPrompt.stopReason === "end_turn", "/goal 命令应直接结束回合");
@@ -145,6 +147,16 @@ async function acpSmoke(): Promise<void> {
     assert(loaded.sessionId === sessionId, "session/load 应恢复指定 sessionId");
   } finally {
     await client.close();
+  }
+
+  const rehydratedClient = startAcp(["--experimental-acp", "--approve-all", "--approval-mode-policy", "mutable", "--orchestration-mode", "ha-ego-superego"]);
+  try {
+    await rehydratedClient.request("initialize", {});
+    const compact = await rehydratedClient.request("session/prompt", { sessionId, prompt: "/compact" });
+    assert(compact.stopReason === "end_turn", "新 ACP 进程应能用旧 sessionId 自愈恢复并处理 prompt");
+    await rehydratedClient.waitForNotification((msg) => JSON.stringify(msg).includes("已压缩当前 MAS 会话上下文"), "rehydrated compact 消息");
+  } finally {
+    await rehydratedClient.close();
   }
 }
 
@@ -315,6 +327,13 @@ async function autonomyStorageSmoke(): Promise<void> {
     const recentActivity = buildRecentActivitySummary(store, { sessionId: "e2e-session", limit: 5 });
     assert(recentActivity.rendered.includes("Ego 最近完成了 E2E"), "近期活动摘要应包含 Ego 最近执行事实");
     assert(recentActivity.recentRoles.includes("ego"), "近期活动摘要应记录最近出现过 Ego");
+    store.createRun({ runId: "e2e-current-run", sessionId: "e2e-session", cwd: autonomyWorkspace, prompt: "E2E current run" });
+    const previousEgoRuns = store.listSessionAgentRuns({ sessionId: "e2e-session", role: "ego", beforeRunId: "e2e-current-run", limit: 3 });
+    assert(previousEgoRuns.some((run) => run.runId === "e2e-recent-activity-run"), "应能按 AionUI session 查询 Ego 之前的执行上下文");
+    assert(
+      buildEgoPrompt("E2E", "验收合同", undefined, "", "Ego 历史摘要").includes("同一 AionUI 会话中 Ego 之前的执行上下文"),
+      "Ego prompt 应支持注入同会话 Ego 历史上下文",
+    );
     assert(buildHaDecisionPrompt("E2E").includes("不是交付执行者"), "HA 路由 prompt 应明确 HA 不是交付执行者");
     assert(buildHaDecisionPrompt("E2E").includes("不是替 Ego 写文件"), "HA 路由 prompt 应禁止替 Ego 提前完成交付");
     assert(!buildHaDecisionPrompt("E2E").includes("不要停在建议、计划或半成品"), "HA 路由 prompt 不应继承执行者式持续交付倾向");
@@ -350,13 +369,13 @@ async function autonomyStorageSmoke(): Promise<void> {
     assert(buildEgoPrompt("E2E", "验收合同").includes("关键路径"), "Ego prompt 应要求先识别关键路径");
     assert(buildEgoPrompt("E2E", "验收合同").includes("垂直闭环"), "Ego prompt 应要求优先打通可验证垂直闭环");
     assert(buildEgoPrompt("E2E", "验收合同").includes("不能替代闭环"), "Ego prompt 应防止目录/文档/示例替代真实能力");
-    assert(!buildEgoPrompt("E2E", "验收合同").includes("mas_query_memory"), "Ego prompt 不应暴露历史经验查询工具");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("mas_query_memory"), "Ego prompt 应暴露历史经验候选查询工具");
     assert(!buildEgoPrompt("E2E", "验收合同").includes("mas_query_recent_activity"), "Ego prompt 不应暴露近期活动查询工具");
-    assert(buildEgoPrompt("E2E", "验收合同").includes("不拥有 MAS 近期活动"), "Ego prompt 应明确全局查询工具边界");
+    assert(buildEgoPrompt("E2E", "验收合同").includes("不拥有 MAS 近期活动"), "Ego prompt 应明确近期活动工具边界");
     assert(buildEgoPrompt("E2E", "验收合同").includes("普通“还有文件没写完"), "Ego prompt 应禁止把普通未完成当作 needs_attention");
     assert(buildEgoPrompt("E2E", "验收合同").includes("内部资源压力不是用户可见理由"), "Ego prompt 应禁止用内部资源压力缩小交付范围");
     assert(!buildEgoPrompt("E2E", "验收合同").includes("工具预算或迭代预算耗尽"), "Ego prompt 不应诱导模型猜测工具/迭代预算");
-    assert(!roleToolNames("ego").includes("mas_query_memory"), "Ego 工具白名单不应包含历史经验查询工具");
+    assert(roleToolNames("ego").includes("mas_query_memory"), "Ego 工具白名单应包含历史经验候选查询工具");
     assert(!roleToolNames("ego").includes("mas_query_recent_activity"), "Ego 工具白名单不应包含近期活动查询工具");
     assert(!roleToolNames("ego").includes("mas_external_read"), "Ego 工具白名单不应包含外部读取工具");
     assert(roleToolNames("ha").includes("mas_query_recent_activity"), "HA 工具白名单应包含近期活动查询工具");

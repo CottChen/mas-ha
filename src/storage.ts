@@ -416,6 +416,55 @@ export class MasStore {
     }));
   }
 
+  listSessionAgentRuns(input: { sessionId: string; role?: RoleName; limit?: number; beforeRunId?: string }): AgentRunRecord[] {
+    const limit = Math.max(1, Math.min(input.limit ?? 8, 30));
+    const params: Array<string | number> = [input.sessionId];
+    const where = ["runs.session_id = ?"];
+    if (input.role) {
+      where.push("agent_runs.role = ?");
+      params.push(input.role);
+    }
+    if (input.beforeRunId) {
+      where.push("agent_runs.run_id != ?");
+      params.push(input.beforeRunId);
+    }
+    params.push(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT agent_runs.id, agent_runs.run_id, agent_runs.role, agent_runs.iteration, agent_runs.status,
+                agent_runs.input_json, agent_runs.output_json, agent_runs.created_at, agent_runs.updated_at
+         FROM agent_runs
+         JOIN runs ON runs.run_id = agent_runs.run_id
+         WHERE ${where.join(" AND ")}
+         ORDER BY agent_runs.id DESC
+         LIMIT ?`,
+      )
+      .all(...params) as Array<{
+      id: number;
+      run_id: string;
+      role: RoleName;
+      iteration: number;
+      status: string;
+      input_json: string;
+      output_json: string | null;
+      created_at: string;
+      updated_at: string;
+    }>;
+    return rows
+      .reverse()
+      .map((row) => ({
+        id: row.id,
+        runId: row.run_id,
+        role: row.role,
+        iteration: row.iteration,
+        status: row.status,
+        input: parseJson(row.input_json),
+        output: parseJson(row.output_json),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+  }
+
 
   addApproval(input: { runId: string; toolCallId: string; toolName: string; decision: string; rawInput?: unknown }): void {
     this.db

@@ -52,6 +52,17 @@ export function startAcpServer(options: AcpServerOptions): void {
 
   peer.on("initialize", () => ({
     protocolVersion: 1,
+    agentCapabilities: {
+      loadSession: true,
+      sessionCapabilities: {
+        close: {},
+      },
+    },
+    agentInfo: {
+      name: "mas",
+      version: "0.1.0",
+    },
+    // AionUI 旧适配层仍会读取这些字段；标准 ACP 字段见 agentCapabilities/agentInfo。
     serverCapabilities: {
       streaming: true,
       sessionManagement: true,
@@ -74,41 +85,23 @@ export function startAcpServer(options: AcpServerOptions): void {
 
   peer.on("session/new", async (params) => {
     const sessionId = `mas-${randomUUID()}`;
-    const orchestrationMode = normalizeOrchestrationMode(params?.orchestrationMode ?? options.orchestrationMode);
-    const approvalMode = normalizeInitialApprovalMode(params, options.approvalMode);
-    const cwd = normalizeCwd(params?.cwd);
-    const skills = await safeDiscoverSkills(cwd);
-    const selectedModel = extractModelId(params);
-    sessions.set(sessionId, { sessionId, cwd, approvalMode, orchestrationMode, context: { summary: "", turns: [] }, skills, selectedModel });
-    queueSessionUpdates(peer, sessionId, { summary: "", turns: [] }, skills, approvalMode, orchestrationMode, cwd, selectedModel);
-    return sessionResponse(sessionId, cwd, approvalMode, orchestrationMode, skills, selectedModel);
+    const session = await buildSessionState(sessionId, params, { summary: "", turns: [] });
+    sessions.set(sessionId, session);
+    queueSessionUpdates(peer, sessionId, session.context, session.skills, session.approvalMode, session.orchestrationMode, session.cwd, session.selectedModel);
+    return sessionResponse(session);
   });
 
   peer.on("session/load", async (params) => {
     const sessionId = String(params?.sessionId ?? `mas-${randomUUID()}`);
-    const orchestrationMode = normalizeOrchestrationMode(params?.orchestrationMode ?? options.orchestrationMode);
-    const approvalMode = normalizeInitialApprovalMode(params, options.approvalMode);
-    const cwd = normalizeCwd(params?.cwd);
-    const skills = await safeDiscoverSkills(cwd);
-    const context = store.getConversationContext(sessionId);
-    const selectedModel = extractModelId(params);
-    sessions.set(sessionId, {
-      sessionId,
-      cwd,
-      approvalMode,
-      orchestrationMode,
-      context,
-      skills,
-      selectedModel,
-    });
-    queueSessionUpdates(peer, sessionId, context, skills, approvalMode, orchestrationMode, cwd, selectedModel);
-    return sessionResponse(sessionId, cwd, approvalMode, orchestrationMode, skills, selectedModel);
+    const session = await buildSessionState(sessionId, params, store.getConversationContext(sessionId));
+    sessions.set(sessionId, session);
+    queueSessionUpdates(peer, sessionId, session.context, session.skills, session.approvalMode, session.orchestrationMode, session.cwd, session.selectedModel);
+    return sessionResponse(session);
   });
 
   peer.on("session/prompt", async (params) => {
     const sessionId = String(params?.sessionId ?? "");
-    const session = sessions.get(sessionId);
-    if (!session) throw new Error(`未知 sessionId：${sessionId}`);
+    const session = await getOrHydrateSession(sessionId, params, "prompt");
     const prompt = extractPrompt(params?.prompt);
     const sink = new AcpStreamSink(peer, sessionId);
     const abort = new AbortController();
@@ -171,23 +164,38 @@ export function startAcpServer(options: AcpServerOptions): void {
     }
 
     const activeGoal = store.listGoals({ cwd: session.cwd, statuses: ["active"], limit: 1 })[0];
-    const result = await runner.run(
-      prompt,
-      {
-        cwd: session.cwd,
-        approvalMode: session.approvalMode,
-        orchestrationMode: session.orchestrationMode,
-        maxIterations: options.maxIterations,
-        signal: abort.signal,
-        goalId: activeGoal?.goalId,
-        model: session.selectedModel,
-        conversationHistory: session.context.turns,
-        conversationSummary: session.context.summary,
-        availableSkills: session.skills,
-      },
-      sink,
-      sessionId,
-    );
+    let result: { runId: string; result: string };
+    try {
+      result = await runner.run(
+        prompt,
+        {
+          cwd: session.cwd,
+          approvalMode: session.approvalMode,
+          orchestrationMode: session.orchestrationMode,
+          maxIterations: options.maxIterations,
+          signal: abort.signal,
+          goalId: activeGoal?.goalId,
+          model: session.selectedModel,
+          conversationHistory: session.context.turns,
+          conversationSummary: session.context.summary,
+          availableSkills: session.skills,
+        },
+        sink,
+        sessionId,
+      );
+    } catch (error) {
+      if (abort.signal.aborted || isAbortError(error)) {
+        return {
+          stopReason: "cancelled",
+          usage: {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+        };
+      }
+      throw error;
+    }
     store.addMessage({ sessionId, role: "assistant", content: result.result, metadata: { runId: result.runId, source: "mas" } });
     session.context = store.getConversationContext(sessionId);
 
@@ -207,60 +215,100 @@ export function startAcpServer(options: AcpServerOptions): void {
     return {};
   });
 
-  peer.on("session/set_mode", (params) => {
-    const session = sessions.get(String(params?.sessionId ?? ""));
-    if (!session) return {};
+  peer.on("session/close", async (params) => {
+    const sessionId = String(params?.sessionId ?? "");
+    const session = sessions.get(sessionId);
+    if (session) {
+      session.abort?.abort();
+      sessions.delete(sessionId);
+      store.audit({ runId: "system", actor: "system", action: "acp_session_closed", payload: { sessionId, cwd: session.cwd } });
+    }
+    return {};
+  });
+
+  peer.on("session/set_mode", async (params) => {
+    const sessionId = String(params?.sessionId ?? "");
+    const session = await getOrHydrateSession(sessionId, params, "set_mode");
     if (options.approvalModePolicy === "mutable") {
       session.approvalMode = approvalModeFromAcpMode(params?.modeId ?? params?.id ?? params?.mode ?? params?.value, session.approvalMode);
     }
     queueModeUpdate(peer, session.sessionId, session.approvalMode);
-    return sessionResponse(session.sessionId, session.cwd, session.approvalMode, session.orchestrationMode, session.skills, session.selectedModel);
+    return sessionResponse(session);
   });
+
   peer.on("session/set_model", async (params) => {
-    const session = sessions.get(String(params?.sessionId ?? ""));
-    if (!session) return {};
+    const sessionId = String(params?.sessionId ?? "");
+    const session = await getOrHydrateSession(sessionId, params, "set_model");
     session.selectedModel = extractModelId(params);
-    return sessionResponse(session.sessionId, session.cwd, session.approvalMode, session.orchestrationMode, session.skills, session.selectedModel);
+    return sessionResponse(session);
   });
-  peer.on("session/set_config_option", (params) => {
-    const session = sessions.get(String(params?.sessionId ?? ""));
-    if (!session) return {};
-    const optionId = String(params?.optionId ?? params?.id ?? "");
+
+  peer.on("session/set_config_option", async (params) => {
+    const sessionId = String(params?.sessionId ?? "");
+    const session = await getOrHydrateSession(sessionId, params, "set_config_option");
+    const optionId = String(params?.configId ?? params?.optionId ?? params?.id ?? "");
     if (optionId === "orchestrationMode") {
       session.orchestrationMode = normalizeOrchestrationMode(params?.value);
-      queueConfigUpdate(peer, session.sessionId, session.approvalMode);
+      queueConfigUpdate(peer, session);
     }
-    return sessionResponse(session.sessionId, session.cwd, session.approvalMode, session.orchestrationMode, session.skills, session.selectedModel);
+    return sessionResponse(session);
   });
+
   peer.start();
+
+  async function buildSessionState(sessionId: string, params: unknown, context: ConversationContext): Promise<SessionState> {
+    const cwd = normalizeCwd(readParam(params, "cwd"));
+    return {
+      sessionId,
+      cwd,
+      approvalMode: normalizeInitialApprovalMode(params, options.approvalMode),
+      orchestrationMode: normalizeOrchestrationMode(readParam(params, "orchestrationMode") ?? options.orchestrationMode),
+      context,
+      skills: await safeDiscoverSkills(cwd),
+      selectedModel: extractModelId(params),
+    };
+  }
+
+  async function getOrHydrateSession(sessionId: string, params: unknown, reason: string): Promise<SessionState> {
+    const existing = sessions.get(sessionId);
+    if (existing) return existing;
+    if (!sessionId) throw new Error("缺少 sessionId");
+    const session = await buildSessionState(sessionId, params, store.getConversationContext(sessionId));
+    sessions.set(sessionId, session);
+    store.audit({ runId: "system", actor: "system", action: "acp_session_rehydrated", payload: { sessionId, cwd: session.cwd, reason } });
+    return session;
+  }
 }
 
-async function sessionResponse(
-  sessionId: string,
-  cwd: string,
-  approvalMode: ApprovalMode,
-  orchestrationMode: OrchestrationMode,
-  skills: SkillSummary[],
-  selectedModel?: string,
-): Promise<Record<string, unknown>> {
-  const modelSummary = await getPiBackendModelSummary(cwd, selectedModel);
-  const currentModelId = selectedModel && modelSummary.availableModels.some((model) => model.id === selectedModel) ? selectedModel : modelSummary.currentModelId;
-  return {
-    sessionId,
-    modes: [
+async function sessionResponse(session: SessionState): Promise<Record<string, unknown>> {
+  const modelSummary = await getPiBackendModelSummary(session.cwd, session.selectedModel);
+  const currentModelId =
+    session.selectedModel && modelSummary.availableModels.some((model) => model.id === session.selectedModel)
+      ? session.selectedModel
+      : modelSummary.currentModelId;
+  const modeState = {
+    availableModes: [
       { id: "default", name: "默认", description: "写文件和命令需要审批" },
       { id: "bypassPermissions", name: "免确认", description: "等价于 mas --approve-all" },
     ],
-    currentModeId: acpModeFromApprovalMode(approvalMode),
-    configOptions: [
-      {
-        id: "orchestrationMode",
-        name: "编排模式",
-        type: "select",
-        value: orchestrationMode,
-        options: orchestrationModeList(),
-      },
-    ],
+    currentModeId: acpModeFromApprovalMode(session.approvalMode),
+  };
+  const configOptions = [
+    {
+      id: "orchestrationMode",
+      name: "编排模式",
+      description: "MAS 内部 HA/Ego/Superego 编排策略。",
+      category: "_mas_orchestration",
+      type: "select",
+      currentValue: session.orchestrationMode,
+      options: orchestrationModeList().map((mode) => ({ value: mode.id, name: mode.name, description: mode.description })),
+    },
+  ];
+  return {
+    sessionId: session.sessionId,
+    modes: modeState,
+    currentModeId: modeState.currentModeId,
+    configOptions,
     models: {
       currentModelId,
       availableModels: modelSummary.availableModels,
@@ -273,13 +321,17 @@ async function sessionResponse(
         roleModels: modelSummary.roleModels,
         warning: modelSummary.warning,
       },
-      skills: skills.map((skill) => ({ name: skill.name, description: skill.description, path: skill.path })),
+      skills: session.skills.map((skill) => ({ name: skill.name, description: skill.description, path: skill.path })),
     },
   };
 }
 
 function normalizeCwd(value: unknown): string {
   return typeof value === "string" && value.length > 0 ? value : process.cwd();
+}
+
+function readParam(params: unknown, key: string): unknown {
+  return params && typeof params === "object" ? (params as Record<string, unknown>)[key] : undefined;
 }
 
 function normalizeInitialApprovalMode(params: unknown, fallback: ApprovalMode): ApprovalMode {
@@ -396,7 +448,7 @@ function queueSessionUpdates(
 ): void {
   setTimeout(() => {
     void (async () => {
-      queueConfigUpdate(peer, sessionId, approvalMode);
+      queueConfigUpdate(peer, { sessionId, cwd, approvalMode, orchestrationMode, context, skills, selectedModel });
       queueAvailableCommands(peer, sessionId, skills);
       await queueRoleModelSummary(peer, sessionId, cwd, selectedModel);
       replayHistory(peer, sessionId, context);
@@ -436,8 +488,25 @@ function formatRoleModelLine(label: string, model: PiRoleModelSummary | undefine
   return `- ${label}：${resolved}；source=${model.source}；${requested}；${thinking}；heterogeneity=${model.heterogeneity}${warning}`;
 }
 
-function queueConfigUpdate(peer: JsonRpcPeer, sessionId: string, approvalMode: ApprovalMode): void {
-  queueModeUpdate(peer, sessionId, approvalMode);
+function queueConfigUpdate(peer: JsonRpcPeer, session: SessionState): void {
+  queueModeUpdate(peer, session.sessionId, session.approvalMode);
+  peer.notify("session/update", {
+    sessionId: session.sessionId,
+    update: {
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        {
+          id: "orchestrationMode",
+          name: "编排模式",
+          description: "MAS 内部 HA/Ego/Superego 编排策略。",
+          category: "_mas_orchestration",
+          type: "select",
+          currentValue: session.orchestrationMode,
+          options: orchestrationModeList().map((mode) => ({ value: mode.id, name: mode.name, description: mode.description })),
+        },
+      ],
+    },
+  });
 }
 
 function queueModeUpdate(peer: JsonRpcPeer, sessionId: string, approvalMode: ApprovalMode): void {
@@ -489,4 +558,8 @@ function replayHistory(peer: JsonRpcPeer, sessionId: string, context: Conversati
       },
     });
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AbortError" || error.message.includes("MAS run 已取消"));
 }

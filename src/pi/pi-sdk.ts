@@ -2,6 +2,7 @@ import { delimiter } from "node:path";
 import { existsSync } from "node:fs";
 import { Type } from "@mariozechner/pi-ai";
 import { textToolContent } from "../acp/acp-sink.js";
+import { MAS_BASH_DEFAULT_TIMEOUT_ENV, getMasBashDefaultTimeoutSeconds } from "../core/tool-policy.js";
 import type {
   ApprovalMode,
   CritiqueResult,
@@ -63,7 +64,7 @@ export function roleToolNames(role: RoleName, phase?: PiSessionOptions["phase"])
   if (role === "ha") {
     return ["mas_query_memory", "mas_query_recent_activity", "mas_external_search", "mas_external_read", "read", "grep", "find", "ls", "bash", "ha_decision"];
   }
-  if (role === "ego") return ["read", "grep", "find", "ls", "write", "edit", "bash", "ego_result"];
+  if (role === "ego") return ["mas_query_memory", "read", "grep", "find", "ls", "write", "edit", "bash", "ego_result"];
   return ["mas_query_memory", "mas_query_recent_activity", "read", "grep", "find", "ls", "bash", "superego_review"];
 }
 
@@ -153,7 +154,7 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
   });
   const capturedStructuredOutputs = new Map<string, unknown>();
-  const customTools = createRoleCustomTools(pi, options, (toolName, output) => {
+  const customTools = createRoleCustomTools(pi, options, settingsManager, (toolName, output) => {
     capturedStructuredOutputs.set(toolName, output);
   });
   const resourceLoader = new pi.DefaultResourceLoader({
@@ -208,12 +209,12 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     }
     if (event.type === "tool_execution_start") {
       if (isInternalTool(String(event.toolName ?? ""))) return;
-      options.sink.toolStart(toToolEvent(event.toolCallId, event.toolName, event.args, options.role));
+      options.sink.toolStart(toToolEvent(event.toolCallId, event.toolName, effectiveToolInput(String(event.toolName ?? ""), event.args), options.role));
     }
     if (event.type === "tool_execution_update") {
       if (isInternalTool(String(event.toolName ?? ""))) return;
       options.sink.toolUpdate({
-        ...toToolEvent(event.toolCallId, event.toolName, event.args, options.role),
+        ...toToolEvent(event.toolCallId, event.toolName, effectiveToolInput(String(event.toolName ?? ""), event.args), options.role),
         status: "in_progress",
         content: [textToolContent(String(event.partialResult ?? ""))],
       });
@@ -221,7 +222,7 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
     if (event.type === "tool_execution_end") {
       if (isInternalTool(String(event.toolName ?? ""))) return;
       options.sink.toolUpdate({
-        ...toToolEvent(event.toolCallId, event.toolName, event.args, options.role),
+        ...toToolEvent(event.toolCallId, event.toolName, effectiveToolInput(String(event.toolName ?? ""), event.args), options.role),
         status: event.isError ? "failed" : "completed",
         content: [textToolContent(stringifyToolResult(event.result))],
       });
@@ -481,12 +482,13 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
     });
     pi.on("tool_call", async (event: any) => {
       const toolName = String(event.toolName ?? "");
-      const tool = toToolEvent(event.toolCallId, toolName, event.input);
+      const input = effectiveToolInput(toolName, event.input);
+      const tool = toToolEvent(event.toolCallId, toolName, input);
       recordPiEvent(options, {
         type: "tool_call",
         toolCallId: tool.id,
         toolName,
-        input: event.input,
+        input,
       });
       if (isReadOnlyTool(toolName) || isInternalTool(toolName)) return undefined;
 
@@ -495,7 +497,7 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
           toolCallId: tool.id,
           toolName,
           decision: "allow_always",
-          rawInput: event.input,
+          rawInput: input,
         });
         recordApprovalDecision(options, tool, toolName, "allow_always", true);
         return undefined;
@@ -506,7 +508,7 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
           toolCallId: tool.id,
           toolName,
           decision: "allow_always",
-          rawInput: event.input,
+          rawInput: input,
         });
         recordApprovalDecision(options, tool, toolName, "allow_always", true);
         return undefined;
@@ -516,7 +518,7 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
           toolCallId: tool.id,
           toolName,
           decision: "reject_once",
-          rawInput: event.input,
+          rawInput: input,
         });
         recordApprovalDecision(options, tool, toolName, "reject_once", false);
         return { block: true, reason: `MAS 已拒绝工具调用：${toolName}` };
@@ -530,7 +532,7 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
         toolCallId: tool.id,
         toolName,
         decision: decision.optionId,
-        rawInput: event.input,
+        rawInput: input,
       });
       recordApprovalDecision(options, tool, toolName, decision.optionId, decision.approved);
       if (!decision.approved) {
@@ -653,9 +655,10 @@ type StructuredOutputToolSpec<T> = {
 function createRoleCustomTools(
   pi: PiModule,
   options: PiSessionOptions,
+  settingsManager: any,
   capture: (toolName: string, output: unknown) => void,
 ): unknown[] {
-  const tools = createMasMemoryTools(pi, options);
+  const tools = [createDefaultTimeoutBashTool(pi, options, settingsManager), ...createMasMemoryTools(pi, options)];
   if (options.role === "ha") {
     return [...tools, createStructuredOutputTool(pi, haDecisionToolSpec(), capture), createStructuredOutputTool(pi, haFinalReviewToolSpec(), capture)];
   }
@@ -724,6 +727,43 @@ function createMasMemoryTools(pi: PiModule, options: PiSessionOptions): unknown[
     tools.push(createExternalReadTool(pi, options));
   }
   return tools;
+}
+
+function createDefaultTimeoutBashTool(pi: PiModule, options: PiSessionOptions, settingsManager: any): unknown {
+  const defaultTimeout = getMasBashDefaultTimeoutSeconds();
+  const base = pi.createBashToolDefinition(options.cwd, {
+    commandPrefix: typeof settingsManager?.getShellCommandPrefix === "function" ? settingsManager.getShellCommandPrefix() : undefined,
+    shellPath: typeof settingsManager?.getShellPath === "function" ? settingsManager.getShellPath() : undefined,
+  });
+  return {
+    ...base,
+    description: [
+      base.description,
+      `MAS applies a default timeout of ${defaultTimeout} seconds when timeout is omitted or invalid.`,
+      `Set timeout explicitly in seconds when a command should run longer or shorter than the default.`,
+      `Override the MAS default with ${MAS_BASH_DEFAULT_TIMEOUT_ENV}.`,
+    ].join(" "),
+    promptSnippet: `${base.promptSnippet ?? "Execute bash commands"}（默认 ${defaultTimeout} 秒超时，可显式设置 timeout）`,
+    parameters: Type.Object({
+      command: Type.String({ description: "Bash command to execute" }),
+      timeout: Type.Optional(
+        Type.Number({
+          description: `Timeout in seconds. MAS applies ${defaultTimeout}s when omitted or invalid; set a positive value to run longer or shorter.`,
+        }),
+      ),
+    }),
+    async execute(toolCallId: string, params: { command: string; timeout?: number }, signal: AbortSignal, onUpdate: unknown, ctx: unknown) {
+      const effectiveInput = effectiveBashInput(params);
+      if (effectiveInput.timeout !== params.timeout) {
+        recordMasEvent(options, "mas.bash.default_timeout_applied", {
+          toolCallId,
+          defaultTimeoutSeconds: defaultTimeout,
+          command: summarizeCommandForAudit(params.command),
+        });
+      }
+      return base.execute(toolCallId, effectiveInput, signal, onUpdate, ctx);
+    },
+  };
 }
 
 function createExternalSearchTool(pi: PiModule, options: PiSessionOptions): unknown {
@@ -1290,6 +1330,28 @@ function toToolEvent(id: string, toolName: string, rawInput: unknown, role?: Rol
     rawInput,
     locations: extractLocations(rawInput),
   };
+}
+
+function effectiveToolInput(toolName: string, rawInput: unknown): unknown {
+  return toolName === "bash" ? effectiveBashInput(rawInput) : rawInput;
+}
+
+function effectiveBashInput(rawInput: unknown): { command: string; timeout: number } {
+  const input = rawInput && typeof rawInput === "object" ? (rawInput as Record<string, unknown>) : {};
+  return {
+    ...input,
+    command: typeof input.command === "string" ? input.command : "",
+    timeout: normalizeBashTimeout(input.timeout),
+  };
+}
+
+function normalizeBashTimeout(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  return getMasBashDefaultTimeoutSeconds();
+}
+
+function summarizeCommandForAudit(command: string): string {
+  return command.replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
 function roleDisplayName(role: RoleName): string {

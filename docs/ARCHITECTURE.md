@@ -19,7 +19,7 @@ MAS 的核心不是多个模型轮流发言，而是让不同角色持有不同�
 | 角色 | 责任 | 工具与证据边界 |
 | --- | --- | --- |
 | HA | 面向用户，负责路由、澄清、只读 intake、验收合同、最终用户验收和交叉验证 | 路由阶段使用 MAS 记忆、近期活动、外部检索/读取、工作区只读工具、自动授权只读 `bash` 和 `ha_decision`；终验阶段继续拥有工作区只读工具和自动授权 `bash`，用于独立抽样复算和 `ha_final_review` |
-| Ego | 执行者，负责读取、编辑、运行命令、产出结果和验证记录 | 工作区读写、命令执行、`ego_result`；不拥有 MAS 记忆、近期活动或外部检索工具 |
+| Ego | 执行者，负责读取、编辑、运行命令、产出结果和验证记录 | 工作区读写、命令执行、`mas_query_memory`、`ego_result`；不拥有 MAS 近期活动或外部检索工具 |
 | Superego | 系统审计 Critic/Judge，负责基于 AuditPacket、只读检查和历史风险评审 Ego 输出 | AuditPacket、只读工作区检查、MAS 记忆/近期活动、自动授权 `bash` 只读复算、`superego_review` |
 | Id / Dream | 低权限经验重组和裁剪 | 只操作 Experience Graph，不写用户工作区，不执行外部工具 |
 
@@ -82,9 +82,17 @@ MAS 不默认把历史经验和近期活动注入所有 agent 上下文，而是
 - `mas_external_search`：HA 专属外部检索工具。
 - `mas_external_read`：HA 专属外部 URL 读取工具，用于核对搜索候选或用户给定 URL 原文。
 
-HA 可以使用 `mas_query_memory`、`mas_query_recent_activity`、`mas_external_search`、`mas_external_read`、工作区只读工具和自动授权只读 `bash` 完成路由、状态回答、合同前 intake 和最终用户验收。Superego 可以使用 `mas_query_memory`、`mas_query_recent_activity`、工作区只读工具和自动授权 `bash` 辅助系统审计，但不能覆盖 AuditPacket。Ego 不拥有这些全局查询工具，只消费 HA 验收合同、Superego 返工批注和当前工作区证据。
+HA 可以使用 `mas_query_memory`、`mas_query_recent_activity`、`mas_external_search`、`mas_external_read`、工作区只读工具和自动授权只读 `bash` 完成路由、状态回答、合同前 intake 和最终用户验收。Superego 可以使用 `mas_query_memory`、`mas_query_recent_activity`、工作区只读工具和自动授权 `bash` 辅助系统审计，但不能覆盖 AuditPacket。Ego 可以使用 `mas_query_memory` 查询 Experience Graph 历史经验候选，用于吸取过往踩坑和相似失败模式；Ego 不拥有 `mas_query_recent_activity`、外部检索或外部读取工具，避免执行层扩大任务边界。
+
+Ego 的 Pi session 仍按 MAS 角色隔离创建，但 MAS 会在 Ego prompt 中注入同一 AionUI 会话内 Ego 之前的执行上下文摘要。该摘要只用于保持执行连续性和避免重复返工，不是新用户指令；若与当前用户目标、HA 验收合同、Superego/HA 批注或当前文件证据冲突，以后者为准。
 
 所有检索结果都不是权威事实，采用前必须结合当前任务证据、AuditPacket、用户目标和验收合同交叉验证。
+
+## Bash 超时策略
+
+MAS 覆盖 Pi SDK 的内置 `bash` 工具，在模型未显式传入 `timeout` 或传入无效值时应用默认超时。当前默认值是 `120` 秒，可通过 `MAS_BASH_DEFAULT_TIMEOUT_SECONDS` 调整。模型显式提供正数 `timeout` 时，MAS 尊重该值。
+
+该策略属于框架确定性保障，不依赖 agent 自觉遵守。基础 prompt 会同步告知 HA、Ego、Superego 默认超时时间，并要求它们根据命令性质按需调大或调小 `timeout`：安装、构建、大型测试和只读复算可以显式加长；快速探测可以缩短；长期服务命令不应作为普通前台命令无限等待，应使用有限超时完成短探活并报告结果。
 
 ## 审计与门禁
 
