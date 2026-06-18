@@ -32,7 +32,7 @@ Freud 心理结构是职责分化和内部动力关系的设计来源，但不�
 - Superego 被描述为“约束和反思面”，负责发现“看起来完成但真实理解错了”的情况。
 - HA 不属于这个心理三面模型；HA 是面向用户的组织角色，负责先理解任务、定义合同和最终验收。
 
-这继承 Codex prompt 的设计思想：基础 prompt 不堆具体案例规则，而是塑造稳定判断倾向、工作品味和工具纪律；确定性由 typed tool、AuditPacket、权限系统、测试、复算和门禁提供。
+这继承 Codex prompt 的设计思想：基础 prompt 不堆具体案例规则，而是塑造稳定判断倾向、工作品味和工具纪律；确定性由 typed tool、AuditPacket artifact、权限系统、测试、复算和门禁提供。
 
 具体到 MAS，Codex prompt 的思想落在这些长期倾向上：
 
@@ -157,7 +157,7 @@ Superego 本身就是 MAS 的系统审计 Critic/Judge。运行时只有显式�
 
 - 根据用户任务、验收合同、Ego 输出和 MAS 审计包判断是否可以交给 HA 终验。
 - Superego 是约束和反思面：检查 Ego 的现实检验是否足够，尤其发现“看起来完成但真实理解错了”的情况。
-- AuditPacket 是系统级证据，优先级高于 Ego 自报。
+- AuditPacket 是系统级证据，优先级高于 Ego 自报；完整包由 MAS 持久化为 run artifact，prompt 只注入摘要和索引，Superego/HA 需要核对时通过只读工具按需读取具体 section。
 - 默认假设 Ego 可能偷懒、幻觉或漏报；不能只复述 Ego 自报。
 - 内化评审标准：用户真实目标高于 Ego 自报；AuditPacket 高于 Ego 自报；关键业务口径高于输出结构；能证伪的抽样高于自洽检查；证据不足时不能为了流程闭环而 `accept`。
 - 评审前先问：Ego 最可能在哪个地方被原始候选生成能力带偏？哪个用户口径如果错了，结果会看起来合理但实际错误？Ego 的验证是在证明“文件像结果”，还是证明“口径被正确实现”？是否存在一个低成本样本可以证伪 Ego 的理解？
@@ -182,13 +182,14 @@ Superego 本身就是 MAS 的系统审计 Critic/Judge。运行时只有显式�
 - 当前任务，包含会话历史和技能摘要。
 - HA 验收合同。
 - Ego 结构化输出。
-- MAS AuditPacket。
+- MAS AuditPacket artifact 摘要、索引和关键风险；完整证据通过 `mas_read_run_artifact` 按需读取。
 - 低优先级 `<context_perturbation>`，用于分层风险抽样、少量随机样本、盲点检查和负空间搜索。
 
 可用只读工具：
 
 - `mas_query_memory`：当评审需要查历史相似失败、既有规则候选或经验风险时使用。
-- `mas_query_recent_activity`：当评审目标涉及最近运行状态、角色行为或跨 run 对账时使用；不能覆盖 AuditPacket。
+- `mas_query_recent_activity`：当评审目标涉及最近运行状态、角色行为或跨 run 对账时使用；不能覆盖 AuditPacket artifact。
+- `mas_read_run_artifact`：按需读取当前 run 持久化证据，例如 AuditPacket 的 `findings`、`approvals_tail`、`commands_tail`、`writes_tail`、`boundaryDiff` 或 `full`。
 - 工作区只读工具：`read`、`grep`、`find`、`ls`。
 - 自动授权命令工具：`bash`，只允许用于只读复算、只读检查或环境探测；写文件、修改工作区、删除文件或联网扩大任务边界都不允许，所有调用仍进入审计记录。
 - bash 命令默认超时由 MAS 框架注入，当前默认 `120` 秒，可通过 `MAS_BASH_DEFAULT_TIMEOUT_SECONDS` 调整。Superego prompt 会明确告知默认超时；预计较长的只读抽样复算必须显式设置更大的 `timeout`，避免把工具超时误判为业务失败。
@@ -208,7 +209,7 @@ Superego 本身就是 MAS 的系统审计 Critic/Judge。运行时只有显式�
 2. HA / Superego 注入只读记忆和近期活动工具使用规则；Ego 只注入 `mas_query_memory` 历史经验候选规则，不注入近期活动或外部检索工具规则。
 3. 角色职责、权限约束和当前阶段最终 typed tool 要求。
 4. 当前任务；其中已合成会话历史和技能摘要。
-5. 角色专属证据，例如 HA 验收合同、Superego 批注、Ego 输出、HA 终验证据或 AuditPacket。
+5. 角色专属证据，例如 HA 验收合同、Superego 批注、Ego 输出、HA 终验证据或 AuditPacket artifact 摘要。
 6. `<context_perturbation>` 低优先级候选视角。
 7. typed tool 参数 schema。
 

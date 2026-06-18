@@ -49,25 +49,28 @@ function collectSignals(store: MasStore, input: RunEntropyInput): LowEntropySign
   }
 
   for (const audit of store.listAuditLog(input.runId, 300)) {
-    if (audit.action === "audit_packet_built") {
-      const packet = asRecord(audit.payload);
-      const findings = Array.isArray(packet.findings) ? packet.findings : [];
-      if (findings.length === 0) {
+    if (audit.action === "audit_packet_artifact_written") {
+      const payload = asRecord(audit.payload);
+      const summary = asRecord(payload.summary);
+      const counts = asRecord(summary.counts);
+      const findingCount = numberValue(counts.findings) ?? 0;
+      if (findingCount === 0) {
         signals.push(baseSignal(input, {
           type: "audit_finding",
-          summary: "AuditPacket built with no blocking findings.",
+          summary: "AuditPacket artifact written with no findings.",
           confidence: 0.75,
           sourceKind: "derived",
-          payload: { action: audit.action, findingCount: 0 },
+          payload: { action: audit.action, artifactId: payload.artifactId, findingCount: 0 },
         }));
       }
-      for (const finding of findings) {
+      const highlights = Array.isArray(summary.highlights) ? summary.highlights : [];
+      for (const highlight of highlights) {
         signals.push(baseSignal(input, {
           type: "audit_finding",
-          summary: `AuditPacket finding: ${JSON.stringify(finding).slice(0, 700)}`,
-          confidence: 0.85,
+          summary: `AuditPacket artifact: ${String(highlight).slice(0, 700)}`,
+          confidence: findingCount > 0 ? 0.85 : 0.65,
           sourceKind: "derived",
-          payload: finding,
+          payload: { action: audit.action, artifactId: payload.artifactId, highlight, counts },
         }));
       }
     }
@@ -232,4 +235,8 @@ function clamp01(value: number): number {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

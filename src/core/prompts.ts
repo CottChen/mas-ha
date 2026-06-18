@@ -1,4 +1,4 @@
-import type { AuditPacket, CritiqueResult, EgoResult, HaDecision, ReflectionIntent } from "../types.js";
+import type { CritiqueResult, EgoResult, HaDecision, ReflectionIntent } from "../types.js";
 import { bashTimeoutGuidance } from "./tool-policy.js";
 
 export const SHARED_AGENT_PRINCIPLES = [
@@ -135,6 +135,7 @@ export function buildHaFinalReviewPrompt(
   egoOutput: string,
   superegoCritique?: CritiqueResult,
   contextPerturbation = "",
+  auditEvidenceContext = "",
 ): string {
   return [
     "你是 MAS 的 HA 终验者，代表整个 MAS 向用户负责，站在用户目标和整体利益上做最终验收与交叉验证。请只做只读验收，不要修改文件、不要执行有副作用的命令；必要时可以直接使用 bash 执行只读 Python/命令做抽样复算。",
@@ -152,6 +153,7 @@ export function buildHaFinalReviewPrompt(
     "- 对数据、表格、报表、代码结果等可复算任务，至少做一次独立只读抽样检查，或明确说明为什么无法检查并降低 evidenceQuality。",
     "- AionUI 会话模型选择只作用于 HA，目的是让 HA 可以使用不同于执行层的模型代表用户做异质验收。",
     "- 你可以使用 mas_query_memory、mas_query_recent_activity、mas_external_search、mas_external_read，也可以执行只读检查；不要机械查询。",
+    "- 如果 prompt 提供 MAS run artifact，说明完整审计证据已由框架持久化；先阅读摘要，需要核对具体证据时用 mas_read_run_artifact 读取具体 section，不要要求用户提供审计包。",
     "- 如果验收依赖外部公开事实、当前版本、第三方文档、论文、标准或成熟行业实践，优先用 mas_external_search 补充外部证据；问题具有公共性、内部方案可疑或反复失败时，也应检查已有工作。需要核对具体来源时用 mas_external_read 读取原文，再和本地证据交叉验证。",
     "- 调用 mas_external_search 或 mas_external_read 后，必须继续调用 ha_final_review 提交最终验收结论；不要停在检索/读取工具结果之后。",
     "- 如果用户意图未满足、证据不足、Superego 与 Ego 互相矛盾、或存在需要用户确认的风险，必须 revise 或 escalate；仍有清晰自动下一步时优先 revise。",
@@ -176,6 +178,8 @@ export function buildHaFinalReviewPrompt(
     "",
     "Superego 结论：",
     superegoCritique ? JSON.stringify(superegoCritique, null, 2).slice(-12000) : "当前模式未启用 Superego，HA 必须独立承担最终交叉验证。",
+    auditEvidenceContext.trim() ? "\nMAS 审计 artifact：" : "",
+    auditEvidenceContext.trim() ? auditEvidenceContext : "",
     contextPerturbation.trim() ? "\n候选上下文扰动：" : "",
     contextPerturbation.trim() ? contextPerturbation : "",
   ].join("\n");
@@ -308,7 +312,7 @@ export function buildEgoRepairPrompt(rawOutput: string, errorMessage: string): s
   ].join("\n");
 }
 
-export function buildSuperegoPrompt(task: string, contract: string, egoOutput: string, auditPacket: AuditPacket, contextPerturbation = ""): string {
+export function buildSuperegoPrompt(task: string, contract: string, egoOutput: string, auditEvidenceContext: string, contextPerturbation = ""): string {
   return [
     "你是 MAS 的 Superego 评审者。你是约束和反思面：检查 Ego 的现实检验是否足够，尤其发现“看起来完成但真实理解错了”的情况。请只评审，不要修改文件、不要执行有副作用的命令；必要时可以直接使用 bash 执行只读 Python/命令做抽样复算。",
     SHARED_AGENT_PRINCIPLES,
@@ -317,13 +321,14 @@ export function buildSuperegoPrompt(task: string, contract: string, egoOutput: s
     "根据用户任务、验收合同、Ego 输出和 MAS 审计包判断是否可以交给 HA 终验。",
     "重点评审：是否完成用户真实意图，是否越权，是否缺少验证，是否有不必要改动，是否把内部细节当用户价值。",
     "MAS 审计包是系统级证据，优先级高于 Ego 自报；如果两者冲突，以审计包为准。",
+    "完整 AuditPacket 不默认塞入 prompt；如果下方提供 MAS run artifact，请先阅读摘要，需要核对具体证据时调用 mas_read_run_artifact 读取 findings、approvals_tail、commands_tail、writes_tail、boundaryDiff 或 full。",
     "你要内化以下评审标准：用户真实目标高于 Ego 自报；AuditPacket 高于 Ego 自报；关键业务口径高于输出结构；能证伪的抽样高于自洽检查；证据不足时不能为了流程闭环而 accept。",
     "评审前先问四个问题：Ego 最可能在哪个地方被原始候选生成能力带偏？哪个用户口径如果错了，结果会看起来合理但实际错误？Ego 的验证是在证明“文件像结果”，还是证明“口径被正确实现”？是否存在一个低成本样本可以证伪 Ego 的理解？",
-    "如果 auditPacket.findings 非空，必须逐项评估。默认验收策略是当前状态门禁 + 历史事实留痕：当前仍违反 auditPacket.outputBoundary 声明的输出边界、只读输入路径写入、失败验证伪装为成功时不能 accept，必须 revise 或 escalate；历史已清理的越界写入和 changed_files 漏报必须记录，但不单独作为永久阻塞。",
-    "不要默认要求所有任务写入 output/。只有 auditPacket.outputBoundary.mode 为 output_dir 且 auditPacket.currentWritesOutsideOutput 非空时，才指出当前违反 output/ 输出边界；如果 mode 为 workspace_root，workspace 根目录内的源码、文档和配置产物不是输出边界违规。",
-    "如果只有 auditPacket.writesOutsideOutput 非空，则作为历史留痕评估修复是否充分。",
-    "如果 auditPacket.currentWritesToReadOnlyInputs 非空，必须指出当前违反只读输入边界。",
-    "如果 auditPacket.unreportedWrites 非空，必须指出 Ego changed_files 自报不完整。",
+    "如果 MAS 审计 artifact 摘要显示 findings 非空，必须逐项评估；摘要不足时调用 mas_read_run_artifact 读取 findings 或相关 tail section。默认验收策略是当前状态门禁 + 历史事实留痕：当前仍违反输出边界、只读输入路径写入、失败验证伪装为成功时不能 accept，必须 revise 或 escalate；历史已清理的越界写入和 changed_files 漏报必须记录，但不单独作为永久阻塞。",
+    "不要默认要求所有任务写入 output/。只有审计 artifact 的 outputBoundary.mode 为 output_dir 且 currentWritesOutsideOutput 非空时，才指出当前违反 output/ 输出边界；如果 mode 为 workspace_root，workspace 根目录内的源码、文档和配置产物不是输出边界违规。",
+    "如果审计 artifact 只有 historical writesOutsideOutput，则作为历史留痕评估修复是否充分。",
+    "如果审计 artifact 显示 currentWritesToReadOnlyInputs 非空，必须指出当前违反只读输入边界。",
+    "如果审计 artifact 显示 unreportedWrites 非空，必须指出 Ego changed_files 自报不完整。",
     "对数据、表格、报表、代码结果等可复算任务，应优先用只读工具或 bash 执行只读 Python/命令抽样验证关键业务规则；如果环境缺失或命令失败，必须把限制写入 evidenceQuality 和 nextBestObservation。",
     "如果验收合同或用户任务包含 keyCriteria，必须优先评审这些口径是否被 Ego 实现、验证和如实报告。关键口径未验证时，不能只因输出结构、自洽检查或文件存在而 accept。",
     "snapshot/diff 只能作为边界目录轻量元数据 diff + 风险触发深查来使用：不要要求全量重审计或全量 hash；优先检查用户声明的只读输入边界、允许输出边界、已知写入路径和审计矛盾点。",
@@ -353,12 +358,12 @@ export function buildSuperegoPrompt(task: string, contract: string, egoOutput: s
     contract,
     "",
     "Ego 输出：",
-    egoOutput.slice(-12000),
+    egoOutput.slice(-8000),
     contextPerturbation.trim() ? "\n候选上下文扰动：" : "",
     contextPerturbation.trim() ? contextPerturbation : "",
     "",
-    "MAS 审计包：",
-    JSON.stringify(auditPacket, null, 2).slice(-12000),
+    "MAS 审计 artifact：",
+    auditEvidenceContext,
   ].join("\n");
 }
 

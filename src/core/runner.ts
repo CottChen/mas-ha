@@ -14,11 +14,12 @@ import type {
 } from "../types.js";
 import { createPiSession } from "../pi/pi-sdk.js";
 import { buildAuditPacket, createBoundarySnapshot, enforceAuditGate } from "./audit.js";
-import { buildRecentActivitySummary } from "./activity.js";
+import { buildRecentActivitySummary, buildStalledRunDiagnosis, isRoleHealthCheckQuestion, isRunStatusQuestion } from "./activity.js";
 import { AutonomyLoop } from "./autonomy.js";
 import { ContextPerturbationController } from "./context-perturbation.js";
 import { retrieveMemoryArtifacts } from "./memory.js";
 import { ORCHESTRATION_MODES } from "./orchestration.js";
+import { readRunArtifact, renderRunArtifactPrompt, writeAuditPacketArtifact, type RunArtifactRef } from "./run-artifacts.js";
 import {
   buildAcceptanceContract,
   buildEgoPrompt,
@@ -127,7 +128,7 @@ export class MasRunner {
           sink,
           recordApproval: (input) => this.store.addApproval({ runId, ...input }),
           recordEvent: (input) => this.store.addEvent(input),
-          memoryTools: this.createMemoryToolProvider(sessionId),
+          memoryTools: this.createMemoryToolProvider(sessionId, runId),
         });
         const abortEgo = () => void ego.abort();
         options.signal?.addEventListener("abort", abortEgo, { once: true });
@@ -185,8 +186,12 @@ export class MasRunner {
           critique = attentionCritique;
         }
 
+        const auditPacket = buildAuditPacket(this.store, { runId, cwd: options.cwd, egoResult, boundarySnapshot, task, contract });
+        const auditArtifact = writeAuditPacketArtifact({ runId, iteration, auditPacket });
+        this.store.audit({ runId, actor: "system", action: "audit_packet_artifact_written", payload: { artifactId: auditArtifact.artifactId, path: auditArtifact.path, summary: auditArtifact.summary } });
+
         if (!mode.usesSuperego) {
-          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, undefined, options, sink, runId, sessionId, iteration, contextInjection);
+          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, undefined, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
           if (haFinalReview.next_action === "accept" && haFinalReview.blocking_issues === 0) {
             const result = `HA 终验通过（${mode.name} 模式，未启用 Superego 评审）。\n\n${finalEgoOutput}`;
@@ -231,14 +236,13 @@ export class MasRunner {
           sink,
           recordApproval: (input) => this.store.addApproval({ runId, ...input }),
           recordEvent: (input) => this.store.addEvent(input),
-          memoryTools: this.createMemoryToolProvider(sessionId),
+          memoryTools: this.createMemoryToolProvider(sessionId, runId),
         });
         const abortSuperego = () => void superego.abort();
         options.signal?.addEventListener("abort", abortSuperego, { once: true });
         let reviewText = "";
         try {
-          const auditPacket = buildAuditPacket(this.store, { runId, cwd: options.cwd, egoResult, boundarySnapshot, task, contract });
-          this.store.audit({ runId, actor: "superego", action: "audit_packet_built", payload: auditPacket });
+          this.store.audit({ runId, actor: "superego", action: "audit_packet_ready", payload: { artifactId: auditArtifact.artifactId, summary: auditArtifact.summary } });
           const latestLedger = options.goalId ? this.store.listEntropyLedgers({ goalId: options.goalId, limit: 1 })[0] : undefined;
           const perturbation = this.createAndRecordPerturbation({
             runId,
@@ -250,8 +254,16 @@ export class MasRunner {
             ledger: latestLedger,
             sourceRefs: [`run:${runId}:audit_packet`],
           });
-          reviewText = await superego.prompt(buildSuperegoPrompt(task, contract, JSON.stringify(egoResult, null, 2), auditPacket, this.perturbations.render(perturbation)));
-          const rawCritique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration);
+          reviewText = await superego.prompt(
+            buildSuperegoPrompt(
+              task,
+              compactTextForReview(contract, 9000),
+              JSON.stringify(compactEgoResultForReview(egoResult), null, 2),
+              renderRunArtifactPrompt(auditArtifact),
+              this.perturbations.render(perturbation),
+            ),
+          );
+          const rawCritique = await this.parseSuperegoWithRepair(reviewText, superego, prompt, task, contract, runId, iteration, options, sink, sessionId);
           critique = routeSuperegoReviewForOrchestration(enforceAuditGate(rawCritique, auditPacket), egoResult);
           if (critique.next_action !== rawCritique.next_action || critique.summary !== rawCritique.summary) {
             this.store.audit({
@@ -292,7 +304,7 @@ export class MasRunner {
             action: "superego_escalation_sent_to_ha",
             payload: { iteration, critique },
           });
-          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection);
+          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
           if (haFinalReview.next_action === "escalate") {
             const result = formatNeedsAttentionResult({
@@ -317,7 +329,7 @@ export class MasRunner {
           continue;
         }
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
-          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection);
+          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
           if (haFinalReview.next_action === "escalate") {
             const result = formatNeedsAttentionResult({
@@ -500,6 +512,9 @@ export class MasRunner {
     contract: string,
     runId: string,
     iteration: number,
+    options: MasRunOptions,
+    sink: StreamSink,
+    sessionId: string | undefined,
   ): Promise<CritiqueResult> {
     try {
       return this.parseStructuredOutput("superego_review", rawOutput, superego, (text) => parseCritique(text, "Superego"), "Superego");
@@ -515,9 +530,27 @@ export class MasRunner {
       });
       this.store.audit({ runId, actor: "superego", action: "review_parse_failed", payload: { message: firstError.message } });
       superego.clearStructuredOutput("superego_review");
-      const repairText = await superego.prompt(buildSuperegoRepairPrompt(rawOutput, firstError.message));
+      const repairSuperego = await createPiSession({
+        cwd: options.cwd,
+        runId,
+        sessionId,
+        role: "superego",
+        phase: "review",
+        iteration,
+        approvalMode: options.approvalMode,
+        sink,
+        recordApproval: (input) => this.store.addApproval({ runId, ...input }),
+        recordEvent: (input) => this.store.addEvent(input),
+        memoryTools: this.createMemoryToolProvider(sessionId, runId),
+      });
+      const abortRepair = () => void repairSuperego.abort();
+      options.signal?.addEventListener("abort", abortRepair, { once: true });
+      let repairText = "";
       try {
-        return this.parseStructuredOutput("superego_review", repairText, superego, (text) => parseCritique(text, "Superego"), "Superego");
+        repairText = await repairSuperego.prompt(buildSuperegoRepairPrompt(rawOutput, firstError.message));
+        const repaired = this.parseStructuredOutput("superego_review", repairText, repairSuperego, (text) => parseCritique(text, "Superego"), "Superego");
+        this.store.audit({ runId, actor: "superego", action: "review_repair_succeeded", payload: { outputChars: repairText.length } });
+        return repaired;
       } catch (repairError) {
         const err = repairError instanceof Error ? repairError : new Error(String(repairError));
         this.store.addAgentRun({
@@ -542,6 +575,9 @@ export class MasRunner {
             },
           ],
         };
+      } finally {
+        options.signal?.removeEventListener("abort", abortRepair);
+        repairSuperego.dispose();
       }
     }
   }
@@ -632,6 +668,80 @@ export class MasRunner {
     throwIfAborted(options.signal);
     this.store.audit({ runId, actor: "ha", action: "route_started", payload: { orchestrationMode: mode.id } });
     emitStage(sink, "HA 路由开始。");
+    const stalledRunDiagnosis = isRunStatusQuestion(prompt)
+      ? buildStalledRunDiagnosis(this.store, { currentRunId: runId, sessionId, cwd: options.cwd })
+      : undefined;
+    if (stalledRunDiagnosis?.hasStalledRun) {
+      const recent = buildRecentActivitySummary(this.store, { sessionId, limit: 6, scope: "all", excludeRunId: runId });
+      const response = [
+        "我先按运行状态诊断，而不是重新生成执行合同。",
+        "",
+        stalledRunDiagnosis.rendered,
+        "",
+        recent.rendered,
+        "",
+        "结论：当前问题不是新任务缺少验收合同，而是已有 run 没有正常收口。应先看上面最后的 audit/approval 事件处理卡点，再决定是否重跑或清理旧 run。",
+      ].join("\n");
+      const decision: HaDecision = {
+        next_action: "answer",
+        response,
+        acceptance_contract: "",
+        rationale: "用户询问运行状态，且同一会话或工作目录存在未收口 running run；优先返回本地审计诊断，避免重复进入 execute。",
+      };
+      this.store.addAgentRun({
+        runId,
+        role: "ha",
+        iteration: 0,
+        status: "completed",
+        input: { prompt, task, contextInjection, orchestrationMode: mode.id, statusDiagnosis: true },
+        output: { decision, statusDiagnosis: stalledRunDiagnosis.rendered, recentActivity: recent.rendered, orchestrationMode: mode },
+      });
+      this.store.audit({ runId, actor: "ha", action: "route_decided", payload: decision });
+      return decision;
+    }
+    if (isRoleHealthCheckQuestion(prompt)) {
+      const decision: HaDecision = {
+        next_action: "execute",
+        response: "",
+        acceptance_contract: [
+          "## objective",
+          "执行一个最小 MAS 角色健康检查，必须真实进入 Ego 和 Superego，而不是只查询历史状态。",
+          "",
+          "## readonlyInputs",
+          "- 当前用户请求：测试 Ego 和 Superego 是否正常。",
+          "- 当前工作目录和 MAS 本地运行记录仅作上下文，不得修改用户业务产物。",
+          "",
+          "## allowedOutputs",
+          "- 可在 MAS 审计记录中产生本次 dry-run 的 agent_runs/events/approvals。",
+          "- 不要求写文件；如必须写临时文件，必须写入当前 workspace 的 output/mas-health-check/ 并说明原因。",
+          "",
+          "## forbiddenStates",
+          "- 禁止用历史 Superego 失败或成功直接替代本次测试结论。",
+          "- 禁止执行全局杀进程命令，例如 taskkill /F /IM node.exe、Stop-Process -Name node、pkill node。",
+          "- 禁止修改用户项目源码、业务数据或 AionUI 配置。",
+          "",
+          "## doneCriteria",
+          "- Ego 必须提交 ego_result，报告本次 dry-run 做了什么、是否无需写文件、验证结果。",
+          "- Superego 必须提交 superego_review；若 Superego 仍失败，必须在本 run 的 agent_runs/audit 中留下新的失败证据。",
+          "- HA 终验必须基于本 run 的 Ego/Superego 结果回答角色链路是否正常。",
+          "",
+          "## validators",
+          "- 检查本 run 是否出现 ego completed agent_run。",
+          "- 检查本 run 是否出现 superego completed agent_run 或明确的 superego parse/repair 失败记录。",
+        ].join("\n"),
+        rationale: "用户显式要求测试 Ego 和 Superego 是否正常，应触发最小 dry-run 真实经过 Ego/Superego，而不是 HA 只查历史状态。",
+      };
+      this.store.addAgentRun({
+        runId,
+        role: "ha",
+        iteration: 0,
+        status: "completed",
+        input: { prompt, task, contextInjection, orchestrationMode: mode.id, roleHealthCheck: true },
+        output: { decision, orchestrationMode: mode },
+      });
+      this.store.audit({ runId, actor: "ha", action: "route_decided", payload: decision });
+      return decision;
+    }
     const ha = await createPiSession({
       cwd: options.cwd,
       runId,
@@ -644,7 +754,7 @@ export class MasRunner {
       sink,
       recordApproval: (input) => this.store.addApproval({ runId, ...input }),
       recordEvent: (input) => this.store.addEvent(input),
-      memoryTools: this.createMemoryToolProvider(sessionId),
+      memoryTools: this.createMemoryToolProvider(sessionId, runId),
     });
     const abortHa = () => void ha.abort();
     options.signal?.addEventListener("abort", abortHa, { once: true });
@@ -739,6 +849,7 @@ export class MasRunner {
     sessionId: string | undefined,
     iteration: number,
     contextInjection: ReturnType<typeof summarizeContextInjection>,
+    auditArtifact?: RunArtifactRef,
   ): Promise<CritiqueResult> {
     throwIfAborted(options.signal);
     this.store.audit({ runId, actor: "ha", action: "final_review_started", payload: { iteration, hasSuperego: Boolean(superegoCritique) } });
@@ -755,7 +866,7 @@ export class MasRunner {
       sink,
       recordApproval: (input) => this.store.addApproval({ runId, ...input }),
       recordEvent: (input) => this.store.addEvent(input),
-      memoryTools: this.createMemoryToolProvider(sessionId),
+      memoryTools: this.createMemoryToolProvider(sessionId, runId),
     });
     const abortHa = () => void ha.abort();
     options.signal?.addEventListener("abort", abortHa, { once: true });
@@ -771,7 +882,7 @@ export class MasRunner {
         sourceRefs: [`run:${runId}:ego_result`, superegoCritique ? `run:${runId}:superego_review` : `run:${runId}:contract`],
       });
       const reviewText = await ha.prompt(
-        buildHaFinalReviewPrompt(task, contract, JSON.stringify(egoResult, null, 2), superegoCritique, this.perturbations.render(perturbation)),
+        buildHaFinalReviewPrompt(task, contract, JSON.stringify(egoResult, null, 2), superegoCritique, this.perturbations.render(perturbation), auditArtifact ? renderRunArtifactPrompt(auditArtifact) : ""),
       );
       const review = enforceHaFinalReviewGate(await this.parseHaFinalReviewWithRepair(reviewText, ha, prompt, task, contract, runId, iteration), { egoResult });
       this.store.addAgentRun({
@@ -785,6 +896,7 @@ export class MasRunner {
           contract,
           egoResult,
           superegoCritique,
+          auditArtifact,
           contextInjection,
           stage: "final_review",
           perturbation: summarizePerturbation(perturbation),
@@ -841,7 +953,7 @@ export class MasRunner {
     return candidate;
   }
 
-  private createMemoryToolProvider(sessionId: string | undefined): Parameters<typeof createPiSession>[0]["memoryTools"] {
+  private createMemoryToolProvider(sessionId: string | undefined, currentRunId?: string): Parameters<typeof createPiSession>[0]["memoryTools"] {
     return {
       queryMemory: (input) => {
         const artifacts = retrieveMemoryArtifacts(this.store, { query: input.query, limit: input.limit });
@@ -852,7 +964,15 @@ export class MasRunner {
           note: "这些是 Experience Graph 历史经验候选，不是事实来源；采用前必须用当前任务证据验证。",
         };
       },
-      queryRecentActivity: (input) => buildRecentActivitySummary(this.store, { sessionId, limit: input.limit, scope: input.scope, role: input.role }),
+      queryRecentActivity: (input) => buildRecentActivitySummary(this.store, { sessionId, limit: input.limit, scope: input.scope, role: input.role, excludeRunId: currentRunId }),
+      readRunArtifact: (input) => {
+        if (!currentRunId) return { error: "当前 runId 不可用，无法读取 MAS run artifact。" };
+        try {
+          return readRunArtifact({ runId: currentRunId, artifactId: input.artifactId, section: input.section, maxChars: input.maxChars });
+        } catch (error) {
+          return { error: `读取 MAS run artifact 失败：${error instanceof Error ? error.message : String(error)}` };
+        }
+      },
     };
   }
 
@@ -1012,6 +1132,28 @@ function formatScore(score: number | undefined): string {
 
 function cleanReviewText(text: string | undefined): string {
   return (text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function compactEgoResultForReview(egoResult: EgoResult): unknown {
+  return {
+    status: egoResult.status,
+    summary: egoResult.summary,
+    final_response: compactTextForReview(egoResult.final_response, 4000),
+    evidence: egoResult.evidence.slice(-20).map((item) => compactTextForReview(item, 800)),
+    changed_files: egoResult.changed_files,
+    verification: egoResult.verification.slice(-20).map((item) => ({
+      command: compactTextForReview(item.command, 500),
+      result: item.result,
+      notes: compactTextForReview(item.notes, 800),
+    })),
+    risks: egoResult.risks.slice(-20).map((item) => compactTextForReview(item, 800)),
+  };
+}
+
+function compactTextForReview(text: string, maxChars: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.floor(maxChars / 2))}\n... 已压缩 ${normalized.length - maxChars} 字符 ...\n${normalized.slice(-Math.ceil(maxChars / 2))}`;
 }
 
 function buildTaskWithConversation(

@@ -1,0 +1,1018 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>多智能体实现 AI 自主性</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #16202a;
+      --muted: #5f6b7a;
+      --line: #dce2ea;
+      --blue: #246bfe;
+      --green: #0b8f6a;
+      --red: #d04545;
+      --amber: #b7791f;
+      --violet: #6f4bd8;
+      --code: #102033;
+      --shadow: 0 18px 48px rgba(21, 34, 50, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.86), rgba(247,248,251,0.94)),
+        radial-gradient(circle at 12% 12%, rgba(36,107,254,0.10), transparent 26%),
+        radial-gradient(circle at 88% 8%, rgba(11,143,106,0.10), transparent 25%);
+      font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      overflow: hidden;
+    }
+
+    .deck {
+      width: 100vw;
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 1fr auto;
+    }
+
+    .slide {
+      display: none;
+      height: calc(100vh - 58px);
+      padding: 42px 58px 28px;
+      overflow: auto;
+    }
+
+    .slide.active { display: block; }
+
+    .slide-inner {
+      max-width: 1240px;
+      min-height: 100%;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 22px;
+    }
+
+    .kicker {
+      color: var(--blue);
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      max-width: 980px;
+      font-size: 58px;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    h2 {
+      font-size: 38px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+    h3 {
+      font-size: 22px;
+      line-height: 1.25;
+    }
+    p, li {
+      color: var(--muted);
+      font-size: 19px;
+      line-height: 1.55;
+    }
+    ul {
+      margin: 0;
+      padding-left: 22px;
+    }
+    strong { color: var(--ink); }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+    .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 8px 22px rgba(21, 34, 50, 0.06);
+    }
+
+    .metric {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .metric b {
+      font-size: 38px;
+      line-height: 1;
+      color: var(--blue);
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(420px, 0.95fr);
+      gap: 30px;
+      align-items: center;
+    }
+
+    .diagram {
+      width: 100%;
+      min-height: 360px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    .flow {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .node {
+      border: 1px solid var(--line);
+      border-left: 5px solid var(--blue);
+      border-radius: 8px;
+      padding: 12px 14px;
+      background: #fff;
+      font-weight: 700;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+    .node small {
+      color: var(--muted);
+      font-weight: 500;
+      text-align: right;
+    }
+    .arrow {
+      text-align: center;
+      color: var(--muted);
+      font-size: 18px;
+    }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+    .step {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-top: 5px solid var(--green);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 144px;
+    }
+    .step b {
+      display: block;
+      color: var(--ink);
+      font-size: 17px;
+      margin-bottom: 8px;
+    }
+    .step span {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 8px 22px rgba(21, 34, 50, 0.06);
+    }
+    .matrix th, .matrix td {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      vertical-align: top;
+      text-align: left;
+      font-size: 15px;
+      line-height: 1.45;
+    }
+    .matrix th {
+      background: #eef3ff;
+      color: #17325f;
+      font-size: 14px;
+    }
+    .matrix tr:last-child td { border-bottom: none; }
+
+    .pill-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .pill.blue { border-color: rgba(36,107,254,0.35); color: var(--blue); background: rgba(36,107,254,0.08); }
+    .pill.green { border-color: rgba(11,143,106,0.35); color: var(--green); background: rgba(11,143,106,0.08); }
+    .pill.red { border-color: rgba(208,69,69,0.35); color: var(--red); background: rgba(208,69,69,0.08); }
+    .pill.amber { border-color: rgba(183,121,31,0.35); color: var(--amber); background: rgba(183,121,31,0.08); }
+
+    .bars {
+      display: grid;
+      gap: 12px;
+    }
+    .bar {
+      display: grid;
+      grid-template-columns: 150px 1fr 70px;
+      gap: 12px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .bar-track {
+      height: 16px;
+      border-radius: 999px;
+      background: #e8edf4;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      width: var(--w);
+      background: linear-gradient(90deg, var(--blue), var(--green));
+    }
+
+    .code {
+      background: var(--code);
+      color: #dce8f8;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 14px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 9px 13px;
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button:hover, button.active {
+      border-color: var(--blue);
+      color: var(--blue);
+      background: rgba(36,107,254,0.08);
+    }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    .nav {
+      height: 58px;
+      background: rgba(255,255,255,0.92);
+      border-top: 1px solid var(--line);
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      padding: 0 20px;
+      gap: 12px;
+    }
+    .progress {
+      height: 7px;
+      background: #e8edf4;
+      border-radius: 999px;
+      overflow: hidden;
+      min-width: 260px;
+    }
+    .progress > div {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--blue), var(--green));
+    }
+    .counter {
+      justify-self: end;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .nav-title {
+      color: var(--muted);
+      font-size: 14px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .quote {
+      font-size: 28px;
+      line-height: 1.35;
+      color: var(--ink);
+      font-weight: 700;
+      border-left: 6px solid var(--blue);
+      padding-left: 18px;
+    }
+
+    .svg-wrap svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+    .bad { border-top: 5px solid var(--red); }
+    .good { border-top: 5px solid var(--green); }
+
+    @media (max-width: 900px) {
+      body { overflow: auto; }
+      .deck { height: auto; min-height: 100vh; }
+      .slide { height: auto; min-height: calc(100vh - 58px); padding: 28px 18px; }
+      h1 { font-size: 40px; }
+      h2 { font-size: 30px; }
+      .hero, .grid.cols-2, .grid.cols-3, .grid.cols-4, .compare { grid-template-columns: 1fr; }
+      .timeline { grid-template-columns: 1fr; }
+      .bar { grid-template-columns: 120px 1fr 48px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck">
+    <section class="slide active" data-title="开场">
+      <div class="slide-inner hero">
+        <div>
+          <div class="kicker">MAS HA Orchestration</div>
+          <h1>多智能体实现 AI 自主性</h1>
+          <p>分享主线：先回答为什么需要多智能体，再讲 MAS 如何用软件框架兜住确定性，最后讲 agent prompt 如何塑造稳定工作人格。</p>
+          <div class="pill-row">
+            <span class="pill blue">ACP 接入 AionUI</span>
+            <span class="pill green">Pi SDK 运行时</span>
+            <span class="pill amber">HA / Ego / Superego</span>
+            <span class="pill red">AuditPacket 门禁</span>
+          </div>
+        </div>
+        <div class="diagram flow">
+          <div class="node">AionUI <small>ACP Client / UI</small></div>
+          <div class="arrow">↓ JSON-RPC over stdio</div>
+          <div class="node">MAS ACP Agent <small>session / permission / update</small></div>
+          <div class="arrow">↓</div>
+          <div class="node">MAS Core <small>HA → Ego → Superego → HA</small></div>
+          <div class="arrow">↓</div>
+          <div class="node">Pi SDK <small>role session / tools / model registry</small></div>
+          <div class="arrow">↓</div>
+          <div class="node">Workspace + SQLite <small>audit / events / experience graph</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="分享路线">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Narrative</div>
+          <h2>先总后分：从问题到系统，再到 agent 设计</h2>
+        </div>
+        <div class="timeline">
+          <div class="step"><b>1. 先讲目标</b><span>AI 自主性不是放权，而是在闭环里持续降低不确定性。</span></div>
+          <div class="step"><b>2. 再讲框架</b><span>ACP、MAS Core、Pi SDK 分别承担协议、编排和运行时职责。</span></div>
+          <div class="step"><b>3. 讲一次请求</b><span>session、request、合同、typed tool、fallback 和审计如何流转。</span></div>
+          <div class="step"><b>4. 讲理论</b><span>控制论解释反馈闭环，信息熵解释为什么要追求高信息增益证据。</span></div>
+          <div class="step"><b>5. 讲异质性</b><span>Tool-MAD 启发：不同工具、证据和角色才能跳出固定吸引子。</span></div>
+          <div class="step"><b>6. 讲角色</b><span>HA / Ego / Superego 的职责、上下文和工具边界。</span></div>
+          <div class="step"><b>7. 讲 prompt</b><span>基础 prompt 塑造人格，领域细节放到技能和上下文。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="项目数据">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Project Snapshot</div>
+          <h2>先看项目形态：自主性是系统工程，不是一条 prompt</h2>
+        </div>
+        <div class="grid cols-4">
+          <div class="card metric"><b>9415</b><span>核心 TypeScript 行数</span></div>
+          <div class="card metric"><b>19</b><span>SQLite 业务表</span></div>
+          <div class="card metric"><b>3</b><span>核心组织角色</span></div>
+          <div class="card metric"><b>4</b><span>主要验证脚本</span></div>
+        </div>
+        <div class="card">
+          <div class="bars">
+            <div class="bar"><span>Core Runner</span><div class="bar-track"><div class="bar-fill" style="--w:84%"></div></div><span>1160 行</span></div>
+            <div class="bar"><span>Pi Adapter</span><div class="bar-track"><div class="bar-fill" style="--w:100%"></div></div><span>1384 行</span></div>
+            <div class="bar"><span>Storage</span><div class="bar-track"><div class="bar-fill" style="--w:100%"></div></div><span>2158 行</span></div>
+            <div class="bar"><span>Prompts</span><div class="bar-track"><div class="bar-fill" style="--w:46%"></div></div><span>640 行</span></div>
+            <div class="bar"><span>Audit</span><div class="bar-track"><div class="bar-fill" style="--w:34%"></div></div><span>467 行</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="软件分层">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Responsibility Boundary</div>
+          <h2>第一层：把协议、编排、运行时拆开</h2>
+        </div>
+        <div class="grid cols-3">
+          <div class="card">
+            <h3>ACP 层</h3>
+            <ul>
+              <li>协议握手和能力声明</li>
+              <li>session new/load/prompt/cancel/close</li>
+              <li>AionUI session/update 映射</li>
+              <li>权限请求映射</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>MAS Core</h3>
+            <ul>
+              <li>HA/Ego/Superego 状态机</li>
+              <li>验收合同和返工闭环</li>
+              <li>AuditPacket 和确定性门禁</li>
+              <li>Experience Graph 与自主调度</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Pi SDK</h3>
+            <ul>
+              <li>角色 agent session</li>
+              <li>模型注册表和认证</li>
+              <li>工具执行和 skill loader</li>
+              <li>typed tool 捕获结构化输出</li>
+            </ul>
+          </div>
+        </div>
+        <p class="quote">框架负责“不能错”的边界，prompt 负责“默认怎么判断更像靠谱的人”。</p>
+      </div>
+    </section>
+
+    <section class="slide" data-title="关键术语">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Vocabulary</div>
+          <h2>先把两个容易误解的词讲清楚</h2>
+        </div>
+        <div class="grid cols-2">
+          <div class="card">
+            <h3>确定性门禁</h3>
+            <p>不是让模型“更自觉”，而是用代码在关键出口做硬检查。比如 schema 校验、typed tool 解析、AuditPacket 对账、权限边界、HA 终验空壳 accept 拦截。模型可以判断，门禁负责阻止明显不合格的判断进入下一状态。</p>
+            <div class="pill-row">
+              <span class="pill blue">schema</span>
+              <span class="pill blue">repair</span>
+              <span class="pill red">audit gate</span>
+              <span class="pill red">permission</span>
+            </div>
+          </div>
+          <div class="card">
+            <h3>本地只读 intake</h3>
+            <p>HA 在生成合同前，对用户明确给出的 README、任务说明、数据目录、模板、配置和代码做只读理解。它的目的不是提前交付，而是把目标、边界、关键口径和验收风险定义准。</p>
+            <div class="pill-row">
+              <span class="pill green">read</span>
+              <span class="pill green">grep</span>
+              <span class="pill green">find</span>
+              <span class="pill green">ls</span>
+              <span class="pill amber">只读 bash</span>
+            </div>
+          </div>
+        </div>
+        <p class="quote">一个负责“不能错过门”，一个负责“进门前先看清楚”。</p>
+      </div>
+    </section>
+
+    <section class="slide" data-title="生命周期">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Session Lifecycle</div>
+          <h2>第二层：session 生命周期先分清楚</h2>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr><th>概念</th><th>含义</th><th>生命周期</th><th>持久化</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>ACP / AionUI sessionId</td><td>用户在 AionUI 中看到的同一个对话</td><td>session/new 到 session/close</td><td>是，关联 messages、runs、summary</td></tr>
+            <tr><td>MAS runId</td><td>一次用户请求的执行实例</td><td>一次 session/prompt</td><td>是，关联 agent_runs、audit、events</td></tr>
+            <tr><td>Pi role session</td><td>HA/Ego/Superego 某一阶段模型会话</td><td>每次角色调用新建，用完 dispose</td><td>否，in-memory</td></tr>
+          </tbody>
+        </table>
+        <div class="grid cols-2">
+          <div class="card"><h3>自动压缩</h3><p>会话消息超过约 18000 字符时抽取式压缩，保留最近 10 条消息，摘要约 12000 字符以内。</p></div>
+          <div class="card"><h3>可见不等于上下文</h3><p>AionUI 中展示的思考、工具流、模型配置不会自动进入下一轮 agent 上下文。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="请求链路">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Request Lifecycle</div>
+          <h2>第三层：一次 request 如何形成闭环</h2>
+        </div>
+        <div class="timeline">
+          <div class="step"><b>1. Prompt</b><span>恢复会话历史，写入 user message，处理控制命令。</span></div>
+          <div class="step"><b>2. HA 路由</b><span>answer、clarify 或 execute；execute 时生成验收合同。</span></div>
+          <div class="step"><b>3. Baseline</b><span>MAS 创建边界 snapshot，准备后续审计。</span></div>
+          <div class="step"><b>4. Ego</b><span>执行任务，提交 ego_result。</span></div>
+          <div class="step"><b>5. Audit</b><span>构造 AuditPacket，对账工具、写入、changed_files。</span></div>
+          <div class="step"><b>6. Superego</b><span>只读复核，提交 accept / revise / escalate。</span></div>
+          <div class="step"><b>7. HA 终验</b><span>代表用户最终 accept、revise 或人工介入。</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="合同契约">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Acceptance Contract</div>
+          <h2>合同是 request 生命周期里的核心接口</h2>
+        </div>
+        <div class="grid cols-2">
+          <div class="card">
+            <h3>合同字段</h3>
+            <div class="pill-row">
+              <span class="pill blue">objective</span>
+              <span class="pill blue">readonlyInputs</span>
+              <span class="pill blue">allowedOutputs</span>
+              <span class="pill blue">forbiddenStates</span>
+              <span class="pill green">keyCriteria</span>
+              <span class="pill green">doneCriteria</span>
+              <span class="pill amber">requiredEvidence</span>
+              <span class="pill amber">validators</span>
+              <span class="pill red">riskNotes</span>
+            </div>
+          </div>
+          <div class="card">
+            <h3>流转</h3>
+            <p>HA 定义合同，Ego 按合同执行，MAS 用合同推断边界，Superego 按合同审计，HA 再代表用户验收。</p>
+          </div>
+        </div>
+        <p class="quote">合同不是官样文章，它决定了“完成”的含义。</p>
+      </div>
+    </section>
+
+    <section class="slide" data-title="结构化输出">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Typed Tools</div>
+          <h2>typed tool 让模型判断进入软件状态机</h2>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr><th>阶段</th><th>typed tool</th><th>关键结果</th><th>失败兜底</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>HA 路由</td><td>ha_decision</td><td>answer / execute / clarify</td><td>解析文本 JSON，repair prompt，schema 校验</td></tr>
+            <tr><td>Ego 执行</td><td>ego_result</td><td>status、evidence、changed_files、verification</td><td>repair 后仍失败则进入受控失败</td></tr>
+            <tr><td>Superego</td><td>superego_review</td><td>accept / revise / escalate</td><td>Audit gate 覆盖错误 accept</td></tr>
+            <tr><td>HA 终验</td><td>ha_final_review</td><td>最终 accept / revise / escalate</td><td>空壳 accept、零证据质量会被拦截</td></tr>
+          </tbody>
+        </table>
+        <div class="code">模型判断 → typed tool 参数 → MAS schema 校验 → repair prompt → deterministic gate → SQLite 审计</div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="控制论">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Cybernetics</div>
+          <h2>理论底座一：自主性来自反馈闭环</h2>
+        </div>
+        <div class="svg-wrap diagram">
+          <svg viewBox="0 0 1050 390" role="img" aria-label="MAS feedback loop">
+            <defs>
+              <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#246bfe"></path>
+              </marker>
+            </defs>
+            <rect x="40" y="150" width="150" height="70" rx="8" fill="#eef3ff" stroke="#246bfe"></rect>
+            <text x="115" y="180" text-anchor="middle" font-size="18" font-weight="700">用户目标</text>
+            <text x="115" y="204" text-anchor="middle" font-size="13" fill="#5f6b7a">setpoint</text>
+            <rect x="250" y="150" width="150" height="70" rx="8" fill="#f2fbf7" stroke="#0b8f6a"></rect>
+            <text x="325" y="180" text-anchor="middle" font-size="18" font-weight="700">HA 合同</text>
+            <text x="325" y="204" text-anchor="middle" font-size="13" fill="#5f6b7a">controller</text>
+            <rect x="460" y="150" width="150" height="70" rx="8" fill="#fff8ec" stroke="#b7791f"></rect>
+            <text x="535" y="180" text-anchor="middle" font-size="18" font-weight="700">Ego 执行</text>
+            <text x="535" y="204" text-anchor="middle" font-size="13" fill="#5f6b7a">actuator</text>
+            <rect x="670" y="150" width="150" height="70" rx="8" fill="#fff" stroke="#dce2ea"></rect>
+            <text x="745" y="180" text-anchor="middle" font-size="18" font-weight="700">工作区</text>
+            <text x="745" y="204" text-anchor="middle" font-size="13" fill="#5f6b7a">plant</text>
+            <rect x="460" y="285" width="360" height="62" rx="8" fill="#fff0f0" stroke="#d04545"></rect>
+            <text x="640" y="312" text-anchor="middle" font-size="18" font-weight="700">Superego + AuditPacket</text>
+            <text x="640" y="334" text-anchor="middle" font-size="13" fill="#5f6b7a">sensor / negative feedback</text>
+            <line x1="190" y1="185" x2="245" y2="185" stroke="#246bfe" stroke-width="3" marker-end="url(#arrow)"></line>
+            <line x1="400" y1="185" x2="455" y2="185" stroke="#246bfe" stroke-width="3" marker-end="url(#arrow)"></line>
+            <line x1="610" y1="185" x2="665" y2="185" stroke="#246bfe" stroke-width="3" marker-end="url(#arrow)"></line>
+            <path d="M745 220 C745 260, 720 282, 650 285" fill="none" stroke="#246bfe" stroke-width="3" marker-end="url(#arrow)"></path>
+            <path d="M460 316 C320 316, 325 245, 325 225" fill="none" stroke="#246bfe" stroke-width="3" marker-end="url(#arrow)"></path>
+            <rect x="880" y="130" width="130" height="110" rx="8" fill="#f7f8fb" stroke="#dce2ea"></rect>
+            <text x="945" y="162" text-anchor="middle" font-size="16" font-weight="700">扰动</text>
+            <text x="945" y="188" text-anchor="middle" font-size="13" fill="#5f6b7a">外部检索</text>
+            <text x="945" y="210" text-anchor="middle" font-size="13" fill="#5f6b7a">随机样本</text>
+            <text x="945" y="232" text-anchor="middle" font-size="13" fill="#5f6b7a">反事实问题</text>
+            <path d="M880 185 C850 185, 835 185, 820 185" fill="none" stroke="#6f4bd8" stroke-width="3" marker-end="url(#arrow)"></path>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="信息熵">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Information Entropy</div>
+          <h2>理论底座二：下一步要降低不确定性</h2>
+        </div>
+        <div class="grid cols-2">
+          <div class="card">
+            <h3>高熵状态</h3>
+            <ul>
+              <li>目标不清</li>
+              <li>证据不足</li>
+              <li>Ego 自报和审计冲突</li>
+              <li>关键口径未验证</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>低熵状态</h3>
+            <ul>
+              <li>关键假设被证据支持</li>
+              <li>抽样能证伪主要风险</li>
+              <li>剩余不确定性可解释</li>
+              <li>下一观察明确</li>
+            </ul>
+          </div>
+        </div>
+        <div class="grid cols-4">
+          <div class="card metric"><b>ΔH</b><span>entropyDelta</span></div>
+          <div class="card metric"><b>EQ</b><span>evidenceQuality</span></div>
+          <div class="card metric"><b>RU</b><span>remainingUncertainty</span></div>
+          <div class="card metric"><b>NBO</b><span>nextBestObservation</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Tool-MAD">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Tool-MAD</div>
+          <h2>理论底座三：异质工具比普通 debate 更可靠</h2>
+        </div>
+        <div class="grid cols-2">
+          <div class="card">
+            <h3>论文核心观点</h3>
+            <ul>
+              <li>普通 MAD 主要依赖模型内部知识或静态文档，容易共享幻觉。</li>
+              <li>Tool-MAD 给不同 agent 分配不同外部工具，例如 RAG 和 Search API。</li>
+              <li>每轮根据对方论点动态改写 query，而不是只在开头检索一次。</li>
+              <li>Judge 使用 faithfulness 和 answer relevance 作为稳定性信号。</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>论文数据</h3>
+            <div class="grid cols-2">
+              <div class="metric"><b>+5.5%</b><span>相对 MADKE 的最高准确率提升</span></div>
+              <div class="metric"><b>+35.5%</b><span>相对 MAD 的最高提升</span></div>
+              <div class="metric"><b>0.7</b><span>faithfulness 阈值</span></div>
+              <div class="metric"><b>0.8</b><span>answer relevance 阈值</span></div>
+            </div>
+          </div>
+        </div>
+        <table class="matrix">
+          <thead><tr><th>实验点</th><th>结果</th><th>对 MAS 的启发</th></tr></thead>
+          <tbody>
+            <tr><td>RAG + Search 异质组合</td><td>FEVER 73.0、FEVEROUS 71.5、FAVIQ 77.5、AVERITEC 62.0</td><td>不同证据源组合优于同质工具重复。</td></tr>
+            <tr><td>Backbone 平均分</td><td>GPT-4o-mini: 71.0 vs MADKE 68.0 / MAD 52.9；Llama-3.3-70B: 74.0 vs 56.5 / 45.9</td><td>收益不是单一模型带来的，框架异质性本身有效。</td></tr>
+            <tr><td>动态 query formulation</td><td>四数据集均提升，FEVEROUS +2.5，FEVER +2.0</td><td>批注和反事实应驱动下一轮证据获取。</td></tr>
+            <tr><td>stability score feedback</td><td>FAVIQ 提升 +4.5</td><td>证据质量和问题相关性应进入门禁。</td></tr>
+          </tbody>
+        </table>
+        <p>来源：Tool-MAD, arXiv:2601.04742, 2026-01-08。</p>
+      </div>
+    </section>
+
+    <section class="slide" data-title="异质性">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Heterogeneity</div>
+          <h2>异质性不是“多几个 agent”，而是让错误不再强相关</h2>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr><th>异质性维度</th><th>含义</th><th>MAS 中的体现</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>角色异质</td><td>不同 agent 的目标函数不同</td><td>HA 守用户目标，Ego 做交付，Superego 做审计证伪。</td></tr>
+            <tr><td>工具异质</td><td>不同 agent 的外部能力不同</td><td>Ego 有写和执行；Superego 有只读审计；HA 有外部检索和终验复算。</td></tr>
+            <tr><td>证据异质</td><td>结论来自不同证据通道</td><td>用户请求、合同、AuditPacket、工具结果、外部来源、Experience Graph。</td></tr>
+            <tr><td>模型异质</td><td>不同角色可使用不同模型</td><td>AionUI 会话模型只作用于 HA；Ego/Superego 可用角色环境变量覆盖。</td></tr>
+            <tr><td>上下文异质</td><td>每个角色只看到框架显式传入内容</td><td>Pi role session in-memory 隔离；Ego 额外看自身执行摘要；展示流不自动进入上下文。</td></tr>
+            <tr><td>终止权异质</td><td>谁能结束任务由状态机控制</td><td>只有 HA 终验能真正 escalate；Ego/Superego 只能上报内部信号。</td></tr>
+          </tbody>
+        </table>
+        <p class="quote">MAS 的异质性目标：跳出固定吸引子，但仍受合同、权限、审计和当前证据约束。</p>
+      </div>
+    </section>
+
+    <section class="slide" data-title="心理模型">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Freud Model</div>
+          <h2>从异质系统回到单个 agent：LLM 的三个面</h2>
+        </div>
+        <div class="grid cols-3">
+          <div class="card">
+            <h3>原始 LLM 能力</h3>
+            <p>产生候选解释、直觉路径和捷径。它有创造力，也容易幻觉、偷懒、套模板。</p>
+          </div>
+          <div class="card">
+            <h3>Ego 现实执行面</h3>
+            <p>把候选想法放到当前文件、数据、工具、权限和用户目标中检验，完成真实交付。</p>
+          </div>
+          <div class="card">
+            <h3>Superego 约束反思面</h3>
+            <p>发现看起来完成但真实理解错了的情况，提出反事实问题和审计约束。</p>
+          </div>
+        </div>
+        <div class="card">
+          <p>HA 不属于心理三面模型。HA 是组织层的人类助理，负责理解任务、定义合同和最终验收。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="角色分工">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Agent Responsibilities</div>
+          <h2>组织角色：HA、Ego、Superego 如何协作</h2>
+        </div>
+        <table class="matrix">
+          <thead>
+            <tr><th>角色</th><th>核心职责</th><th>证据通道</th><th>终止权</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>HA</td><td>用户代理、路由、合同、终验</td><td>会话历史、只读 intake、外部检索、近期活动、终验抽样</td><td>可以最终 answer / clarify / accept / escalate</td></tr>
+            <tr><td>Ego</td><td>执行交付</td><td>工作区读写、bash、记忆候选、上一轮批注</td><td>只能上报 completed / needs_attention / blocked</td></tr>
+            <tr><td>Superego</td><td>系统审计和反思</td><td>AuditPacket、只读检查、近期活动、记忆、只读 bash</td><td>只能评审 accept / revise / escalate，escalate 是内部信号</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="slide" data-title="上下文管理">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Context Management</div>
+          <h2>协作能持续，是因为上下文显式管理</h2>
+        </div>
+        <div class="tabs" data-tabs="ctx">
+          <button class="active" data-tab="ha">HA</button>
+          <button data-tab="ego">Ego</button>
+          <button data-tab="superego">Superego</button>
+          <button data-tab="storage">压缩与存储</button>
+        </div>
+        <div class="card tab-panel active" data-panel="ha">
+          <h3>HA 可见上下文</h3>
+          <p>同一 AionUI 会话摘要和最近历史、skills、当前用户请求、扰动、路由/终验阶段的本地只读证据、外部检索和近期活动工具结果。</p>
+        </div>
+        <div class="card tab-panel" data-panel="ego">
+          <h3>Ego 可见上下文</h3>
+          <p>当前任务、同会话历史、HA 合同、上一轮批注、Ego 自己之前执行摘要、扰动、mas_query_memory 查询结果。没有近期活动和外部检索。</p>
+        </div>
+        <div class="card tab-panel" data-panel="superego">
+          <h3>Superego 可见上下文</h3>
+          <p>当前任务、同会话历史、HA 合同、Ego 输出、AuditPacket、扰动、只读检查、记忆和近期活动工具结果。</p>
+        </div>
+        <div class="card tab-panel" data-panel="storage">
+          <h3>压缩与存储</h3>
+          <p>进入 prompt 的历史会自动压缩；原始 runs、agent_runs、audit、events 继续保留用于追溯。Pi role session 每次新建、用完 dispose。</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="代码与提示词边界">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Code vs Prompt</div>
+          <h2>最后落到实现边界：代码兜底，prompt 塑形</h2>
+        </div>
+        <div class="compare">
+          <div class="card good">
+            <h3>代码负责</h3>
+            <ul>
+              <li>协议、生命周期、状态机</li>
+              <li>权限、工具白名单、超时</li>
+              <li>typed tool schema 和 repair</li>
+              <li>审计包、门禁、存储、压缩</li>
+            </ul>
+          </div>
+          <div class="card good">
+            <h3>Prompt 负责</h3>
+            <ul>
+              <li>身份和职责</li>
+              <li>工作人格和判断倾向</li>
+              <li>工具纪律</li>
+              <li>证据标准和收口方式</li>
+            </ul>
+          </div>
+        </div>
+        <p class="quote">不要让 prompt 承担状态机，也不要让代码写死所有判断。</p>
+      </div>
+    </section>
+
+    <section class="slide" data-title="Prompt 实践">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Prompt Best Practice</div>
+          <h2>Prompt 的重点是工作人格，不是补丁墙</h2>
+        </div>
+        <div class="compare">
+          <div class="card bad">
+            <h3>补丁式 prompt</h3>
+            <div class="code">如果是 Excel，必须兼容 Mac。
+如果是奖金包，要注意全国值。
+如果是分母，要特别检查。
+如果看到 output 目录，就必须写 output。</div>
+            <p>问题：过拟合历史事故，容易误触发，污染基础 prompt。</p>
+          </div>
+          <div class="card good">
+            <h3>人格式 prompt</h3>
+            <div class="code">对高风险数据、表格、报表、配置迁移和接口兼容任务，
+先形成实现假设清单，覆盖字段/格式约束、映射关系、
+计算基准、时间范围、单位换算、缺失/异常处理和适用范围。
+
+验证要优先证明真实能力，而不是证明文件像结果。</div>
+            <p>优势：能泛化到新任务，又不抹掉当前证据。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="评审问题">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Superego Review</div>
+          <h2>Superego prompt 的核心：找“合理但错误”</h2>
+        </div>
+        <div class="grid cols-2">
+          <div class="card">
+            <h3>评审前四问</h3>
+            <ul>
+              <li>Ego 最可能在哪里被候选路径带偏？</li>
+              <li>哪个用户口径错了也会看起来合理？</li>
+              <li>验证是在证明文件像结果，还是口径正确？</li>
+              <li>有没有低成本样本能证伪 Ego 理解？</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>证据优先级</h3>
+            <div class="flow">
+              <div class="node">用户真实目标</div>
+              <div class="node">HA 验收合同</div>
+              <div class="node">AuditPacket</div>
+              <div class="node">当前文件 / 工具证据</div>
+              <div class="node">Ego 自报</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide" data-title="自主闭环">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Autonomy Loop</div>
+          <h2>任务结束不是终点：经验继续流动</h2>
+        </div>
+        <div class="svg-wrap diagram">
+          <svg viewBox="0 0 1000 320" role="img" aria-label="Experience graph autonomy">
+            <defs>
+              <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+                <path d="M0,0 L0,6 L9,3 z" fill="#0b8f6a"></path>
+              </marker>
+            </defs>
+            <g font-family="Inter, Microsoft YaHei, Arial">
+              <rect x="35" y="120" width="120" height="64" rx="8" fill="#eef3ff" stroke="#246bfe"></rect>
+              <text x="95" y="158" text-anchor="middle" font-size="18" font-weight="700">Task</text>
+              <rect x="205" y="120" width="150" height="64" rx="8" fill="#fff8ec" stroke="#b7791f"></rect>
+              <text x="280" y="158" text-anchor="middle" font-size="18" font-weight="700">Trace</text>
+              <rect x="405" y="120" width="135" height="64" rx="8" fill="#f2fbf7" stroke="#0b8f6a"></rect>
+              <text x="472" y="158" text-anchor="middle" font-size="18" font-weight="700">Result</text>
+              <rect x="590" y="120" width="160" height="64" rx="8" fill="#fff0f0" stroke="#d04545"></rect>
+              <text x="670" y="158" text-anchor="middle" font-size="18" font-weight="700">Experience</text>
+              <rect x="800" y="70" width="150" height="64" rx="8" fill="#f7f8fb" stroke="#6f4bd8"></rect>
+              <text x="875" y="108" text-anchor="middle" font-size="18" font-weight="700">Reflection</text>
+              <rect x="800" y="190" width="150" height="64" rx="8" fill="#f7f8fb" stroke="#6f4bd8"></rect>
+              <text x="875" y="228" text-anchor="middle" font-size="18" font-weight="700">Dream</text>
+              <line x1="155" y1="152" x2="200" y2="152" stroke="#0b8f6a" stroke-width="3" marker-end="url(#arrow2)"></line>
+              <line x1="355" y1="152" x2="400" y2="152" stroke="#0b8f6a" stroke-width="3" marker-end="url(#arrow2)"></line>
+              <line x1="540" y1="152" x2="585" y2="152" stroke="#0b8f6a" stroke-width="3" marker-end="url(#arrow2)"></line>
+              <path d="M750 140 C780 125, 780 105, 795 102" fill="none" stroke="#0b8f6a" stroke-width="3" marker-end="url(#arrow2)"></path>
+              <path d="M750 165 C780 185, 780 215, 795 222" fill="none" stroke="#0b8f6a" stroke-width="3" marker-end="url(#arrow2)"></path>
+              <path d="M875 190 C875 165, 875 155, 875 135" fill="none" stroke="#0b8f6a" stroke-width="3" marker-end="url(#arrow2)"></path>
+            </g>
+          </svg>
+        </div>
+        <p>Reflection 产生经验，Dream 重组和裁剪 Experience Graph，Consolidation 把高置信经验晋升为规则、文档或测试候选。</p>
+      </div>
+    </section>
+
+    <section class="slide" data-title="结论">
+      <div class="slide-inner">
+        <div>
+          <div class="kicker">Takeaways</div>
+          <h2>研发可以带走的 10 条原则</h2>
+        </div>
+        <div class="grid cols-2">
+          <div class="card"><p>1. 把 agent 看成组织，而不是函数调用。</p></div>
+          <div class="card"><p>2. 先设计证据流，再设计对话流。</p></div>
+          <div class="card"><p>3. 合同是用户意图到可执行任务的接口。</p></div>
+          <div class="card"><p>4. Critic 必须有不同证据，不然只是复述。</p></div>
+          <div class="card"><p>5. Prompt 要塑造人格，不要堆补丁。</p></div>
+          <div class="card"><p>6. 上下文要显式、可压缩、可追溯。</p></div>
+          <div class="card"><p>7. 结构化输出必须有 schema、repair 和 gate。</p></div>
+          <div class="card"><p>8. 审计证据必须能覆盖模型自报。</p></div>
+          <div class="card"><p>9. 外部检索是异质视角，不是权威结论。</p></div>
+          <div class="card"><p>10. 自主性要有能量预算和熵下降目标。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="nav">
+      <div class="nav-title" id="navTitle">多智能体实现 AI 自主性</div>
+      <div class="progress"><div id="progress"></div></div>
+      <div class="counter"><button id="prevBtn">上一页</button> <button id="nextBtn">下一页</button> <span id="counter"></span></div>
+    </nav>
+  </main>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const progress = document.getElementById("progress");
+    const counter = document.getElementById("counter");
+    const navTitle = document.getElementById("navTitle");
+    let index = Number(location.hash.replace("#", "")) || 0;
+    if (index < 0 || index >= slides.length) index = 0;
+
+    function show(i) {
+      index = Math.max(0, Math.min(slides.length - 1, i));
+      slides.forEach((slide, idx) => slide.classList.toggle("active", idx === index));
+      progress.style.width = `${((index + 1) / slides.length) * 100}%`;
+      counter.textContent = `${index + 1} / ${slides.length}`;
+      navTitle.textContent = slides[index].dataset.title || "多智能体实现 AI 自主性";
+      history.replaceState(null, "", `#${index}`);
+    }
+
+    document.getElementById("prevBtn").addEventListener("click", () => show(index - 1));
+    document.getElementById("nextBtn").addEventListener("click", () => show(index + 1));
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") show(index + 1);
+      if (event.key === "ArrowLeft" || event.key === "PageUp") show(index - 1);
+      if (event.key === "Home") show(0);
+      if (event.key === "End") show(slides.length - 1);
+    });
+
+    document.querySelectorAll("[data-tabs]").forEach((tabs) => {
+      const buttons = Array.from(tabs.querySelectorAll("button"));
+      const container = tabs.parentElement;
+      const panels = Array.from(container.querySelectorAll(".tab-panel"));
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => {
+          buttons.forEach((item) => item.classList.toggle("active", item === button));
+          panels.forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === button.dataset.tab));
+        });
+      });
+    });
+
+    show(index);
+  </script>
+</body>
+</html>

@@ -119,12 +119,12 @@ MAS 把互联网和外部知识视为组织的感知器官，而不是可选装�
 | --- | --- | --- |
 | HA | 面向用户，负责路由、澄清、只读 intake、验收合同、最终用户验收和交叉验证 | 路由阶段使用 MAS 记忆、近期活动、外部检索/读取、工作区只读工具、自动授权只读 `bash` 和 `ha_decision`；终验阶段继续拥有工作区只读工具和自动授权 `bash`，用于独立抽样复算和 `ha_final_review` |
 | Ego | 执行者，负责读取、编辑、运行命令、产出结果和验证记录 | 工作区读写、命令执行、`mas_query_memory`、`ego_result`；不拥有 MAS 近期活动或外部检索工具 |
-| Superego | 系统审计 Critic/Judge，负责基于 AuditPacket、只读检查和历史风险评审 Ego 输出 | AuditPacket、只读工作区检查、MAS 记忆/近期活动、自动授权 `bash` 只读复算、`superego_review` |
+| Superego | 系统审计 Critic/Judge，负责基于 AuditPacket artifact、只读检查和历史风险评审 Ego 输出 | AuditPacket artifact 摘要和按需读取工具、只读工作区检查、MAS 记忆/近期活动、自动授权 `bash` 只读复算、`superego_review` |
 | Id / Dream | 低权限经验重组和裁剪 | 只操作 Experience Graph，不写用户工作区，不执行外部工具 |
 
 HA 和 Superego 都是 Critic，但视角不同：HA 代表用户验收交付价值和真实意图，Superego 代表系统审计边界和证据一致性。只有 HA 终验可以把 run 结束为真正需要用户人工介入；Ego 的 `needs_attention/blocked` 和 Superego 的 `escalate` 都只是内部未完成或升级信号。
 
-AionUI 中会展示 HA、Ego、Superego 的流式文本、思考、工具调用和工具返回，工具标题带角色前缀，便于用户追踪组织协作过程。展示层不等于上下文层：MAS 只把用户消息和最终 MAS 结果写入会话记忆；HA、Ego、Superego 的 Pi session 彼此隔离，后续角色只能看到 MAS 框架显式注入给它的任务、验收合同、Ego 输出、Superego 评审、AuditPacket、会话摘要或工具查询结果。
+AionUI 中会展示 HA、Ego、Superego 的流式文本、思考、工具调用和工具返回，工具标题带角色前缀，便于用户追踪组织协作过程。展示层不等于上下文层：MAS 只把用户消息和最终 MAS 结果写入会话记忆；HA、Ego、Superego 的 Pi session 彼此隔离，后续角色只能看到 MAS 框架显式注入给它的任务、验收合同、Ego 输出、Superego 评审、AuditPacket artifact 摘要、会话摘要或工具查询结果。
 
 Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执行面，负责把候选想法落到当前证据和工具结果；Superego 是约束和反思面，负责证伪、审计和发现低确定性区域。基础 prompt 不在共享层同时注入心理学术语，避免角色名和隐喻互相污染。
 
@@ -138,12 +138,13 @@ Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执
 4. HA 生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。
 5. MAS 生成边界 baseline snapshot。
 6. Ego 按验收合同执行任务，提交 `ego_result`。
-7. Superego 基于 Ego 结果和 AuditPacket 做系统审计评审。
-8. HA 基于用户意图、Ego 结果、Superego 结论、只读抽样和必要外部检索做最终验收。
+7. MAS 将完整 AuditPacket 持久化为 run artifact，并向 Superego 注入摘要、索引和关键风险。
+8. Superego 基于 Ego 结果、AuditPacket artifact 摘要和按需读取的审计 section 做系统审计评审。
+9. HA 基于用户意图、Ego 结果、Superego 结论、AuditPacket artifact、只读抽样和必要外部检索做最终验收。
+10. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
+11. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
 
 Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结束为人工介入，而是把它转成内部返工/验收信号。Superego 如果返回 `escalate`，MAS 也不会直接结束，而是先交给 HA 终验裁决；只有 HA 确认需要用户补充需求、确认取舍、提供外部凭据/权限，或系统轮次上限耗尽且无自动推进路径时，run 才进入用户可见的 `needs_attention`。
-9. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
-10. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
 
 未启用 Superego 的 `ha-ego` 模式仍保留 HA 终验；只是跳过系统审计评审和返工环节。
 
@@ -152,7 +153,7 @@ Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结�
 MAS 当前采用角色异质工具分工：
 
 - Ego 负责行动工具，拥有工作区读写、命令执行和按需查询 Experience Graph 历史经验的能力；不查询 MAS 近期活动或外部检索，避免执行层用跨 run 状态或外部信息扩大任务边界。
-- Superego 负责系统审计工具，依赖 AuditPacket、只读工作区检查、MAS 内部运行事实和自动授权只读命令抽样复算。
+- Superego 负责系统审计工具，依赖 AuditPacket artifact、只读工作区检查、MAS 内部运行事实和自动授权只读命令抽样复算。
 - HA 负责用户代理 intake 和验收工具，拥有外部检索工具 `mas_external_search`、外部读取工具 `mas_external_read`、工作区只读工具和自动授权只读 `bash`。路由阶段的本地工具只用于理解用户任务和生成更可靠的合同，不用于提前完成交付。
 
 这个设计借鉴前述 Tool-MAD 的异质外部工具思想，并把异质性扩展到模型、组织角色、权限、上下文和评价视角。
@@ -178,12 +179,13 @@ MAS 不默认把历史经验和近期活动注入所有 agent 上下文，而是
 - `mas_query_recent_activity`：查询 `runs/agent_runs` 近期运行事实。
 - `mas_external_search`：HA 专属外部检索工具。
 - `mas_external_read`：HA 专属外部 URL 读取工具，用于核对搜索候选或用户给定 URL 原文。
+- `mas_read_run_artifact`：HA 终验和 Superego 评审可用的当前 run artifact 读取工具，用于按需读取 AuditPacket section。
 
-HA 可以使用 `mas_query_memory`、`mas_query_recent_activity`、`mas_external_search`、`mas_external_read`、工作区只读工具和自动授权只读 `bash` 完成路由、状态回答、合同前 intake 和最终用户验收。Superego 可以使用 `mas_query_memory`、`mas_query_recent_activity`、工作区只读工具和自动授权 `bash` 辅助系统审计，但不能覆盖 AuditPacket。Ego 可以使用 `mas_query_memory` 查询 Experience Graph 历史经验候选，用于吸取过往踩坑和相似失败模式；Ego 不拥有 `mas_query_recent_activity`、外部检索或外部读取工具，避免执行层扩大任务边界。
+HA 可以使用 `mas_query_memory`、`mas_query_recent_activity`、`mas_external_search`、`mas_external_read`、`mas_read_run_artifact`、工作区只读工具和自动授权只读 `bash` 完成路由、状态回答、合同前 intake 和最终用户验收。Superego 可以使用 `mas_query_memory`、`mas_query_recent_activity`、`mas_read_run_artifact`、工作区只读工具和自动授权 `bash` 辅助系统审计，但不能覆盖 AuditPacket artifact。Ego 可以使用 `mas_query_memory` 查询 Experience Graph 历史经验候选，用于吸取过往踩坑和相似失败模式；Ego 不拥有 `mas_query_recent_activity`、`mas_read_run_artifact`、外部检索或外部读取工具，避免执行层扩大任务边界。
 
 Ego 的 Pi session 仍按 MAS 角色隔离创建，但 MAS 会在 Ego prompt 中注入同一 AionUI 会话内 Ego 之前的执行上下文摘要。该摘要只用于保持执行连续性和避免重复返工，不是新用户指令；若与当前用户目标、HA 验收合同、Superego/HA 批注或当前文件证据冲突，以后者为准。
 
-所有检索结果都不是权威事实，采用前必须结合当前任务证据、AuditPacket、用户目标和验收合同交叉验证。
+所有检索结果都不是权威事实，采用前必须结合当前任务证据、AuditPacket artifact、用户目标和验收合同交叉验证。
 
 ## Bash 超时策略
 
@@ -193,7 +195,7 @@ MAS 覆盖 Pi SDK 的内置 `bash` 工具，在模型未显式传入 `timeout` �
 
 ## 审计与门禁
 
-Superego 不能只依赖 Ego 自报。MAS 在评审前构造 AuditPacket，包含：
+Superego 不能只依赖 Ego 自报。MAS 在评审前构造完整 AuditPacket，并持久化为当前 run 的 artifact；prompt 只注入摘要、索引、计数和关键风险，Superego/HA 需要核对时通过 `mas_read_run_artifact` 读取具体 section。AuditPacket 包含：
 
 - 审批记录和原始工具输入。
 - 写入路径和命令摘要。
@@ -213,7 +215,7 @@ MAS 是 AionUI 会话一致性的责任方。AionUI 的 `sessionId`、MAS 的 `r
 - `runId`：一次用户请求对应的 MAS 执行身份。
 - Pi session：HA、Ego 或 Superego 在某一轮中的执行实例。
 
-SQLite 当前保存消息、摘要、运行记录、agent_run、approval、audit、events、Experience Graph、低熵信号、候选和自主调度任务。Pi session 使用内存型执行实例，长期会话语义由 MAS 持久化和显式上下文注入保证。AionUI 可见的中间工具流和 agent 思考不会自动成为下一轮 MAS agent 的上下文；需要跨 run 使用的事实必须通过 MAS 存储、AuditPacket、agent_run 结构化输出、会话摘要或显式查询工具进入上下文。
+SQLite 当前保存消息、摘要、运行记录、agent_run、approval、audit、events、Experience Graph、低熵信号、候选和自主调度任务。Pi session 使用内存型执行实例，长期会话语义由 MAS 持久化和显式上下文注入保证。AionUI 可见的中间工具流和 agent 思考不会自动成为下一轮 MAS agent 的上下文；需要跨 run 使用的事实必须通过 MAS 存储、AuditPacket artifact、agent_run 结构化输出、会话摘要或显式查询工具进入上下文。
 
 ## 当前边界
 

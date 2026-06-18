@@ -2,7 +2,7 @@ import { delimiter } from "node:path";
 import { existsSync } from "node:fs";
 import { Type } from "@mariozechner/pi-ai";
 import { textToolContent } from "../acp/acp-sink.js";
-import { MAS_BASH_DEFAULT_TIMEOUT_ENV, getMasBashDefaultTimeoutSeconds } from "../core/tool-policy.js";
+import { MAS_BASH_DEFAULT_TIMEOUT_ENV, evaluateBashCommandPolicy, getMasBashDefaultTimeoutSeconds } from "../core/tool-policy.js";
 import type {
   ApprovalMode,
   CritiqueResult,
@@ -44,6 +44,7 @@ export interface PiSessionOptions {
 export interface MasMemoryTools {
   queryMemory: (input: { query: string; limit?: number }) => unknown;
   queryRecentActivity: (input: { scope?: "current_session" | "global" | "all"; role?: string; limit?: number }) => unknown;
+  readRunArtifact?: (input: { artifactId: string; section?: string; maxChars?: number }) => unknown;
 }
 
 export function roleToolNames(role: RoleName, phase?: PiSessionOptions["phase"]): string[] {
@@ -58,6 +59,7 @@ export function roleToolNames(role: RoleName, phase?: PiSessionOptions["phase"])
       "find",
       "ls",
       "bash",
+      "mas_read_run_artifact",
       "ha_final_review",
     ];
   }
@@ -65,7 +67,7 @@ export function roleToolNames(role: RoleName, phase?: PiSessionOptions["phase"])
     return ["mas_query_memory", "mas_query_recent_activity", "mas_external_search", "mas_external_read", "read", "grep", "find", "ls", "bash", "ha_decision"];
   }
   if (role === "ego") return ["mas_query_memory", "read", "grep", "find", "ls", "write", "edit", "bash", "ego_result"];
-  return ["mas_query_memory", "mas_query_recent_activity", "read", "grep", "find", "ls", "bash", "superego_review"];
+  return ["mas_query_memory", "mas_query_recent_activity", "read", "grep", "find", "ls", "bash", "mas_read_run_artifact", "superego_review"];
 }
 
 export interface PiSessionHandle {
@@ -492,6 +494,20 @@ function createPermissionExtension(options: PiSessionOptions): (api: any) => voi
       });
       if (isReadOnlyTool(toolName) || isInternalTool(toolName)) return undefined;
 
+      if (toolName === "bash") {
+        const policy = evaluateBashCommandPolicy(typeof (input as { command?: unknown }).command === "string" ? (input as { command: string }).command : "");
+        if (!policy.allowed) {
+          options.recordApproval({
+            toolCallId: tool.id,
+            toolName,
+            decision: "reject_policy",
+            rawInput: input,
+          });
+          recordApprovalDecision(options, tool, toolName, "reject_policy", false);
+          return { block: true, reason: policy.reason ?? "MAS 命令策略拒绝了该 bash 调用。" };
+        }
+      }
+
       if (isAutoApprovedReviewTool(options, toolName)) {
         options.recordApproval({
           toolCallId: tool.id,
@@ -633,6 +649,7 @@ export function isReadOnlyTool(toolName: string): boolean {
     toolName === "ls" ||
     toolName === "mas_query_memory" ||
     toolName === "mas_query_recent_activity" ||
+    toolName === "mas_read_run_artifact" ||
     toolName === "mas_external_search" ||
     toolName === "mas_external_read"
   );
@@ -722,6 +739,37 @@ function createMasMemoryTools(pi: PiModule, options: PiSessionOptions): unknown[
       },
     }),
   ];
+  if ((options.role === "ha" && options.phase === "final_review") || (options.role === "superego" && options.phase === "review")) {
+    tools.push(
+      pi.defineTool({
+        name: "mas_read_run_artifact",
+        label: "MAS Read Run Artifact",
+        description: "只读读取 MAS 当前 run 的持久化证据 artifact，例如完整 AuditPacket 的指定 section。用于按需核对审计证据，避免把大 JSON 全部塞入 prompt。",
+        promptSnippet: "按需读取 MAS run artifact",
+        promptGuidelines: [
+          "当 prompt 中提供 MAS run artifactId，且摘要不足以判断时使用。",
+          "优先读取具体 section，例如 findings、approvals_tail、commands_tail、writes_tail、boundaryDiff；只有确实必要才读取 full。",
+          "读取结果是系统级证据，优先级高于 Ego 自报；但仍要结合用户目标、验收合同和当前文件事实判断。",
+        ],
+        parameters: Type.Object({
+          artifactId: Type.String({ description: "MAS run artifact 标识，例如 audit-packet-i1。" }),
+          section: Type.Optional(Type.String({ description: "要读取的 section，默认 summary。常用：findings、approvals_tail、commands_tail、writes_tail、boundaryDiff、full。" })),
+          maxChars: Type.Optional(Type.Number({ description: "最大返回字符数，默认由 MAS 限制；内容过大时会返回首尾片段。" })),
+        }),
+        async execute(_toolCallId: string, params: { artifactId: string; section?: string; maxChars?: number }) {
+          const result = options.memoryTools?.readRunArtifact?.({
+            artifactId: params.artifactId,
+            section: params.section,
+            maxChars: params.maxChars,
+          }) ?? { error: "MAS run artifact 工具未配置。" };
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: result,
+          };
+        },
+      }),
+    );
+  }
   if (options.role === "ha") {
     tools.push(createExternalSearchTool(pi, options));
     tools.push(createExternalReadTool(pi, options));
@@ -754,6 +802,20 @@ function createDefaultTimeoutBashTool(pi: PiModule, options: PiSessionOptions, s
     }),
     async execute(toolCallId: string, params: { command: string; timeout?: number }, signal: AbortSignal, onUpdate: unknown, ctx: unknown) {
       const effectiveInput = effectiveBashInput(params);
+      const policy = evaluateBashCommandPolicy(effectiveInput.command);
+      if (!policy.allowed) {
+        recordMasEvent(options, "mas.bash.policy_blocked", {
+          toolCallId,
+          command: summarizeCommandForAudit(effectiveInput.command),
+          reason: policy.reason,
+          ruleId: policy.ruleId,
+          severity: policy.severity,
+        });
+        return {
+          content: [{ type: "text", text: `MAS 命令策略已拒绝执行：${policy.reason}` }],
+          isError: true,
+        };
+      }
       if (effectiveInput.timeout !== params.timeout) {
         recordMasEvent(options, "mas.bash.default_timeout_applied", {
           toolCallId,

@@ -19,9 +19,14 @@ export interface RecentActivitySummary {
   rendered: string;
 }
 
-export function buildRecentActivitySummary(store: MasStore, input: { sessionId?: string; limit?: number; scope?: "current_session" | "global" | "all"; role?: string }): RecentActivitySummary {
+export interface StalledRunDiagnosis {
+  hasStalledRun: boolean;
+  rendered: string;
+}
+
+export function buildRecentActivitySummary(store: MasStore, input: { sessionId?: string; limit?: number; scope?: "current_session" | "global" | "all"; role?: string; excludeRunId?: string }): RecentActivitySummary {
   const limit = input.limit ?? 5;
-  const runs = (store.listRuns(Math.max(limit * 2, limit)) as StoredRunRow[]).filter((run) => run.run_id);
+  const runs = (store.listRuns(Math.max(limit * 3, limit)) as StoredRunRow[]).filter((run) => run.run_id && run.run_id !== input.excludeRunId);
   const globalRuns = runs.slice(0, limit);
   const sessionRuns = input.sessionId ? runs.filter((run) => run.session_id === input.sessionId).slice(0, limit) : [];
   const selectedRuns =
@@ -39,6 +44,59 @@ export function buildRecentActivitySummary(store: MasStore, input: { sessionId?:
     recentRoles,
     rendered,
   };
+}
+
+export function isRunStatusQuestion(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  return /卡住|为什么.*停|怎么.*停|当前.*任务|现在.*任务|最近.*做|ego.*(卡|停|执行|状态)|superego.*(失败|状态|评审)|run.*(running|stuck|status)/i.test(text);
+}
+
+export function isRoleHealthCheckQuestion(prompt: string): boolean {
+  const text = prompt.toLowerCase();
+  const asksToCheck = ["测试", "验证", "检查", "probe", "dry-run", "dry run", "health", "smoke"].some((item) => text.includes(item));
+  const mentionsEgo = text.includes("ego") || /执行者|执行层/.test(text);
+  const mentionsSuperego = text.includes("superego") || /评审者|评审层|审计层/.test(text);
+  const asksHealth = ["正常", "可用", "通道", "工具调用", "结构化输出", "review", "评审"].some((item) => text.includes(item));
+  return asksToCheck && mentionsEgo && mentionsSuperego && asksHealth;
+}
+
+export function buildStalledRunDiagnosis(
+  store: MasStore,
+  input: { currentRunId: string; sessionId?: string; cwd: string; limit?: number },
+): StalledRunDiagnosis {
+  const limit = input.limit ?? 20;
+  const runs = (store.listRuns(Math.max(limit, 20)) as StoredRunRow[]).filter((run) => run.run_id && run.run_id !== input.currentRunId);
+  const normalizedCwd = normalizePath(input.cwd);
+  const candidates = runs.filter((run) => {
+    if (run.status !== "running") return false;
+    if (input.sessionId && run.session_id === input.sessionId) return true;
+    return normalizePath(run.cwd) === normalizedCwd;
+  });
+  if (candidates.length === 0) {
+    return { hasStalledRun: false, rendered: "" };
+  }
+  const lines = ["检测到同一会话或工作目录存在未收口的 running run，优先按状态诊断处理："];
+  for (const run of candidates.slice(0, 3)) {
+    const agentRuns = store.listAgentRuns(run.run_id);
+    const approvals = store.listApprovals(run.run_id);
+    const audits = store.listAuditLog(run.run_id, 500);
+    const lastAudit = audits.at(-1);
+    const lastApproval = approvals.at(-1);
+    lines.push(`- run=${run.run_id} status=${run.status} prompt=${run.prompt.replace(/\s+/g, " ").slice(0, 140)}`);
+    lines.push(`  created=${run.created_at} updated=${run.updated_at}`);
+    if (agentRuns.length) {
+      lines.push(`  roles=${summarizeAgentRuns(agentRuns).join(" | ")}`);
+    } else {
+      lines.push("  roles=尚无 HA/Ego/Superego agent_run 记录");
+    }
+    if (lastAudit) {
+      lines.push(`  lastAudit=${lastAudit.createdAt} ${lastAudit.actor}.${lastAudit.action} ${summarizeUnknown(lastAudit.payload)}`);
+    }
+    if (lastApproval) {
+      lines.push(`  lastApproval=${lastApproval.createdAt} ${lastApproval.toolName} decision=${lastApproval.decision} ${summarizeUnknown(lastApproval.rawInput)}`);
+    }
+  }
+  return { hasStalledRun: true, rendered: lines.join("\n") };
 }
 
 function summarizeRun(store: MasStore, run: StoredRunRow, sessionId?: string): {
@@ -115,6 +173,16 @@ function uniqueRuns(runs: StoredRunRow[]): StoredRunRow[] {
     result.push(run);
   }
   return result;
+}
+
+function normalizePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+}
+
+function summarizeUnknown(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  return text.replace(/\s+/g, " ").slice(0, 300);
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -93,6 +93,45 @@
 - 复测日期：
 - 复测结果：本地编排语义断言已加入 `npm run e2e:smoke`，仍待真实 AionUI 会话复测。
 
+## BUG-20260617-001：Ego 可执行全局杀 `node.exe` 导致 MAS/ACP run 悬挂，后续 HA 重复生成 execute 合同
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 会话 `custom-temp-4e0694e6` 排查 + 本地修复
+- 修复摘要：新增 `evaluateBashCommandPolicy`，在权限审批阶段和 bash 工具执行阶段双重拒绝 `taskkill /IM node.exe`、`Stop-Process -Name node`、`pkill/killall node` 等全局杀 Node 命令；HA 路由前新增状态追问短路诊断，发现同 session/cwd 有未收口 running run 时直接返回本地 audit/approval/agent_run 诊断，不再重复生成 execute 合同。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：在 approve-all 模式下让 Ego 尝试执行 `taskkill /F /IM node.exe`；再构造或保留一个同 session/cwd 的 running run，向 AionUI 询问“怎么卡住了 / ego 为什么卡住了”。
+- 通过标准：全局杀 `node.exe` 命令被 `reject_policy` 或 bash 执行层拒绝；PID 定点清理仍可按权限策略执行；状态追问返回悬挂 run 的最后审计/审批事件，而不是创建新的执行合同。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 `npm run typecheck` 通过；针对性验证确认 `taskkill //F //IM node.exe` 被拒绝、`taskkill /PID 1234 /F` 允许，且 `buildStalledRunDiagnosis` 能识别 `custom-temp-4e0694e6` 同会话 running run。仍待真实 AionUI 会话复测。
+
+## BUG-20260618-001：Superego 评审空输出导致 `superego_review` 结构化解析失败
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 会话 `custom-temp-4e0694e6` 及 MAS SQLite 排查
+- 修复摘要：Superego 评审前将完整 AuditPacket 持久化为 MAS run artifact，prompt 只注入 artifact 摘要、索引和关键风险；Superego/HA 可通过 `mas_read_run_artifact` 按需读取具体 section，避免把大 JSON 压缩塞进上下文。Superego 首次未提交 `superego_review` 且无可解析 JSON 时，repair 改为新建干净 Superego session 执行，避免沿用已经失败的大上下文。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：复用会触发 Superego 的 `ha-ego-superego` 任务，尤其是合同、Ego 输出和 AuditPacket 较大的任务；观察 Superego 是否能提交 `superego_review` 或至少在 fresh repair 中成功提交结构化结果。
+- 通过标准：`events` 中 Superego 不再出现连续 `outputChars=0` 后 `review_repair_failed`；`agent_runs` 中 Superego 有 completed 记录；AionUI 不再显示 `Superego 评审结构化输出解析失败且自修复失败：Superego 未提交 superego_review 工具调用，也未输出可解析 JSON`。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 `npm run typecheck` 通过；数据库诊断确认原失败 run 的 Superego prompt 约 48385 字符且无 tool/text 输出。仍待真实 AionUI 会话复测。
+
+## BUG-20260618-002：HA 将 Ego/Superego 健康测试误判为历史状态回答
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 会话 `custom-temp-e8e5514e` 排查 + 本地修复
+- 修复摘要：新增角色健康检查识别逻辑；用户明确要求“测试/验证/检查 Ego 和 Superego 是否正常”时，HA 路由直接生成最小 dry-run 执行合同，强制真实进入 Ego 和 Superego，不再用历史 recent activity 代替本次测试。同时 `mas_query_recent_activity` 支持排除当前 run，避免 HA 把“正在生成本回答”的当前 run `running` 状态写进最终答复。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：在新的 AionUI 会话中发送 `测试一下ego和superego正常吗`。
+- 通过标准：HA 不应直接回答旧 run 中 Superego 失败；本次 run 应进入 Ego 第 1 轮和 Superego 第 1 轮；最终答复基于本 run 的 `ego_result` 和 `superego_review` 或新的 Superego 失败证据。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 `npm run typecheck` 和 `npm run doctor` 通过；仍待重启 AionUI 自定义 ACP Agent 后真实会话复测。
+
 ## 记录模板
 
 ```md
