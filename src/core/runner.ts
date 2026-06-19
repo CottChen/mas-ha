@@ -12,7 +12,7 @@ import type {
   MasRunOptions,
   StreamSink,
 } from "../types.js";
-import { createPiSession } from "../pi/pi-sdk.js";
+import { classifyAgentBackendError, createPiSession } from "../pi/pi-sdk.js";
 import { buildAuditPacket, createBoundarySnapshot, enforceAuditGate } from "./audit.js";
 import { buildRecentActivitySummary, buildStalledRunDiagnosis, isRoleHealthCheckQuestion, isRunStatusQuestion } from "./activity.js";
 import { AutonomyLoop } from "./autonomy.js";
@@ -38,6 +38,8 @@ import {
 function emitStage(sink: StreamSink, text: string): void {
   sink.text(`\n\n${text}\n`);
 }
+
+const EGO_STRUCTURED_FAILURE_HA_THRESHOLD = 3;
 
 export class MasRunner {
   constructor(
@@ -90,6 +92,7 @@ export class MasRunner {
     let critique: CritiqueResult | undefined;
     let finalEgoOutput = "";
     let egoResult: EgoResult | undefined;
+    let consecutiveEgoStructuredFailures = 0;
 
     try {
       const haDecision = await this.decideWithHa(task, prompt, options, sink, runId, sessionId, mode, contextInjection);
@@ -103,7 +106,7 @@ export class MasRunner {
           source: "mas",
           type: "mas.run.completed",
           actor: "ha",
-          payload: { resultKind: haDecision.next_action, orchestrationMode: mode.id },
+          payload: { resultKind: haDecision.next_action, intentType: haDecision.intent_type, orchestrationMode: mode.id },
         });
         sink.done(result);
         return { runId, result };
@@ -111,7 +114,11 @@ export class MasRunner {
 
       const contract = haDecision.acceptance_contract.trim() || buildAcceptanceContract(task);
       emitStage(sink, `HA 已创建验收合同。编排模式：${mode.name}。`);
-      const boundarySnapshot: BoundarySnapshot = createBoundarySnapshot({ cwd: options.cwd, task, contract });
+      const boundaryDeclarations = {
+        readonlyInputPaths: haDecision.readonly_input_paths,
+        allowedOutputPaths: haDecision.allowed_output_paths,
+      };
+      const boundarySnapshot: BoundarySnapshot = createBoundarySnapshot({ cwd: options.cwd, task, contract, boundaryDeclarations });
       this.store.audit({ runId, actor: "system", action: "boundary_snapshot_baseline", payload: summarizeBoundarySnapshot(boundarySnapshot) });
 
       for (let iteration = 1; iteration <= options.maxIterations; iteration++) {
@@ -144,14 +151,21 @@ export class MasRunner {
             sourceRefs: critique ? [`run:${runId}:critique`] : [`run:${runId}:contract`],
           });
           const egoSessionContext = this.buildEgoSessionContext(sessionId, runId);
-          const rawEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique, this.perturbations.render(perturbation), egoSessionContext));
-          egoResult = await this.parseEgoWithRepair(rawEgoOutput, ego, prompt, task, critique, runId, iteration);
+          let rawEgoOutput = "";
+          try {
+            rawEgoOutput = await ego.prompt(buildEgoPrompt(task, contract, critique, this.perturbations.render(perturbation), egoSessionContext));
+            egoResult = await this.parseEgoWithRepair(rawEgoOutput, ego, prompt, task, critique, runId, iteration);
+          } catch (error) {
+            const diagnostic = classifyAgentBackendError(error);
+            egoResult = agentBackendFailureEgoResult("Ego", diagnostic);
+            this.store.audit({ runId, actor: "ego", action: "prompt_failed", payload: { iteration, error: diagnostic } });
+          }
           finalEgoOutput = egoResult.final_response;
           this.store.addAgentRun({
             runId,
             role: "ego",
             iteration,
-            status: "completed",
+            status: egoResult.status === "completed" ? "completed" : "failed",
             input: { prompt, task, critique, contextInjection, egoSessionContext, perturbation: summarizePerturbation(perturbation) },
             output: { text: rawEgoOutput, result: egoResult, messages: ego.messages() },
           });
@@ -170,8 +184,20 @@ export class MasRunner {
           ego.dispose();
         }
 
+        const egoBackendFailure = isAgentBackendFailureEgoResult(egoResult);
+        const egoStructuredFailure = isEgoStructuredOutputFailure(egoResult);
+        if (egoStructuredFailure) {
+          consecutiveEgoStructuredFailures += 1;
+        } else {
+          consecutiveEgoStructuredFailures = 0;
+        }
+
         if (egoResult.status === "blocked" || egoResult.status === "needs_attention") {
-          const attentionCritique = routeEgoAttentionToCritique(egoResult, iteration);
+          const attentionCritique = egoBackendFailure
+            ? routeAgentBackendFailureToCritique("Ego", egoResult, iteration)
+            : egoStructuredFailure
+            ? routeEgoStructuredFailureToCritique(egoResult, iteration, consecutiveEgoStructuredFailures, EGO_STRUCTURED_FAILURE_HA_THRESHOLD)
+            : routeEgoAttentionToCritique(egoResult, iteration);
           this.store.audit({
             runId,
             actor: "system",
@@ -179,6 +205,9 @@ export class MasRunner {
             payload: {
               iteration,
               egoStatus: egoResult.status,
+              egoBackendFailure,
+              egoStructuredFailure,
+              consecutiveEgoStructuredFailures,
               summary: egoResult.summary,
               internalCritique: attentionCritique,
             },
@@ -186,9 +215,86 @@ export class MasRunner {
           critique = attentionCritique;
         }
 
-        const auditPacket = buildAuditPacket(this.store, { runId, cwd: options.cwd, egoResult, boundarySnapshot, task, contract });
-        const auditArtifact = writeAuditPacketArtifact({ runId, iteration, auditPacket });
-        this.store.audit({ runId, actor: "system", action: "audit_packet_artifact_written", payload: { artifactId: auditArtifact.artifactId, path: auditArtifact.path, summary: auditArtifact.summary } });
+        if (egoBackendFailure) {
+          emitStage(sink, `Ego 第 ${iteration} 轮模型/后端接口失败，跳过 Superego 审计，交给 HA 判断。`);
+          this.store.audit({
+            runId,
+            actor: "system",
+            action: "ego_backend_failure_sent_to_ha",
+            payload: { iteration, critique },
+          });
+          const { auditArtifact } = this.createAuditArtifact({ runId, iteration, cwd: options.cwd, egoResult, boundarySnapshot, task, contract, boundaryDeclarations });
+          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
+          emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (haFinalReview.next_action === "escalate") {
+            const result = formatNeedsAttentionResult({
+              headline: "HA 终验未通过：需要人工介入。",
+              haFinalReview,
+              superegoReview: critique,
+              egoOutput: finalEgoOutput,
+            });
+            this.store.updateRun(runId, "needs_attention", { result, critique, egoResult, haFinalReview, orchestrationMode: mode.id });
+            this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique: haFinalReview, reason: "ha_final_escalate_after_ego_backend_failure" });
+            sink.done(result);
+            return { runId, result };
+          }
+          critique = haFinalReview;
+          continue;
+        }
+
+        if (egoStructuredFailure) {
+          if (consecutiveEgoStructuredFailures < EGO_STRUCTURED_FAILURE_HA_THRESHOLD) {
+            emitStage(
+              sink,
+              `Ego 第 ${iteration} 轮未提交可解析结构化结果，跳过 Superego 审计，直接打回 Ego（连续 ${consecutiveEgoStructuredFailures}/${EGO_STRUCTURED_FAILURE_HA_THRESHOLD}）。`,
+            );
+            this.store.audit({
+              runId,
+              actor: "system",
+              action: "ego_structured_failure_direct_revise",
+              payload: { iteration, consecutiveEgoStructuredFailures, threshold: EGO_STRUCTURED_FAILURE_HA_THRESHOLD, critique },
+            });
+            this.store.addEvent({
+              runId,
+              sessionId,
+              role: "ego",
+              iteration,
+              source: "mas",
+              type: "mas.ego.structured_failure.direct_revise",
+              actor: "system",
+              payload: { consecutiveEgoStructuredFailures, threshold: EGO_STRUCTURED_FAILURE_HA_THRESHOLD, critique },
+            });
+            continue;
+          }
+
+          emitStage(sink, `Ego 连续 ${consecutiveEgoStructuredFailures} 轮未提交可解析结构化结果，跳过 Superego 审计，交给 HA 判断是否需要人工介入。`);
+          this.store.audit({
+            runId,
+            actor: "system",
+            action: "ego_structured_failure_escalated_to_ha",
+            payload: { iteration, consecutiveEgoStructuredFailures, threshold: EGO_STRUCTURED_FAILURE_HA_THRESHOLD, critique },
+          });
+          const { auditArtifact } = this.createAuditArtifact({ runId, iteration, cwd: options.cwd, egoResult, boundarySnapshot, task, contract, boundaryDeclarations });
+          const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
+          emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (haFinalReview.next_action === "escalate") {
+            const result = formatNeedsAttentionResult({
+              headline: "HA 终验未通过：需要人工介入。",
+              haFinalReview,
+              superegoReview: critique,
+              egoOutput: finalEgoOutput,
+            });
+            this.store.updateRun(runId, "needs_attention", { result, critique, egoResult, haFinalReview, orchestrationMode: mode.id });
+            this.recordAutonomyClosure({ runId, sessionId, goalId: options.goalId, prompt, status: "needs_attention", result, egoResult, critique: haFinalReview, reason: "ha_final_escalate_after_ego_structured_failures" });
+            sink.done(result);
+            return { runId, result };
+          }
+          critique = haFinalReview;
+          consecutiveEgoStructuredFailures = 0;
+          continue;
+        }
+
+        let { auditPacket, auditArtifact } = this.createAuditArtifact({ runId, iteration, cwd: options.cwd, egoResult, boundarySnapshot, task, contract, boundaryDeclarations });
 
         if (!mode.usesSuperego) {
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, undefined, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
@@ -291,6 +397,29 @@ export class MasRunner {
             actor: "superego",
             payload: critique,
           });
+        } catch (error) {
+          const diagnostic = classifyAgentBackendError(error);
+          critique = agentBackendFailureCritique("Superego", diagnostic, iteration);
+          this.store.addAgentRun({
+            runId,
+            role: "superego",
+            iteration,
+            status: "failed",
+            input: { prompt, task, contract, auditPacket, contextInjection },
+            output: { text: reviewText, error: diagnostic, critique },
+          });
+          this.store.audit({ runId, actor: "superego", action: "prompt_failed", payload: { iteration, error: diagnostic, critique } });
+          this.store.addEvent({
+            runId,
+            sessionId,
+            role: "superego",
+            iteration,
+            source: "mas",
+            type: "mas.superego.review.failed",
+            actor: "superego",
+            payload: { error: diagnostic, critique },
+          });
+          ({ auditPacket, auditArtifact } = this.createAuditArtifact({ runId, iteration, cwd: options.cwd, egoResult, boundarySnapshot, task, contract, boundaryDeclarations }));
         } finally {
           options.signal?.removeEventListener("abort", abortSuperego);
           superego.dispose();
@@ -454,6 +583,35 @@ export class MasRunner {
     }
   }
 
+  private createAuditArtifact(input: {
+    runId: string;
+    iteration: number;
+    cwd: string;
+    egoResult: EgoResult;
+    boundarySnapshot: BoundarySnapshot;
+    task: string;
+    contract: string;
+    boundaryDeclarations: { readonlyInputPaths: string[]; allowedOutputPaths: string[] };
+  }): { auditPacket: ReturnType<typeof buildAuditPacket>; auditArtifact: RunArtifactRef } {
+    const auditPacket = buildAuditPacket(this.store, {
+      runId: input.runId,
+      cwd: input.cwd,
+      egoResult: input.egoResult,
+      boundarySnapshot: input.boundarySnapshot,
+      task: input.task,
+      contract: input.contract,
+      boundaryDeclarations: input.boundaryDeclarations,
+    });
+    const auditArtifact = writeAuditPacketArtifact({ runId: input.runId, iteration: input.iteration, auditPacket });
+    this.store.audit({
+      runId: input.runId,
+      actor: "system",
+      action: "audit_packet_artifact_written",
+      payload: { artifactId: auditArtifact.artifactId, path: auditArtifact.path, summary: auditArtifact.summary },
+    });
+    return { auditPacket, auditArtifact };
+  }
+
   private async parseEgoWithRepair(
     rawOutput: string,
     ego: Awaited<ReturnType<typeof createPiSession>>,
@@ -491,10 +649,13 @@ export class MasRunner {
           output: { text: repairText, error: err.message },
         });
         this.store.audit({ runId, actor: "ego", action: "result_repair_failed", payload: { message: err.message } });
+        const finalResponse = rawOutput.trim()
+          ? `Ego 已返回执行内容，但 MAS 无法把它稳定解析为结构化结果。\n\n原始输出：\n${rawOutput}`
+          : "Ego 没有提交 ego_result，也没有返回可见文本；MAS 无法判断它是否完成了任务。";
         return {
           status: "needs_attention",
           summary: `Ego 执行结果 JSON 解析失败且自修复失败：${err.message}`,
-          final_response: `Ego 已返回执行内容，但 MAS 无法把它稳定解析为结构化结果。\n\n原始输出：\n${rawOutput}`,
+          final_response: finalResponse,
           evidence: [],
           changed_files: [],
           verification: [{ command: "", result: "not_run", notes: "Ego 结构化输出解析失败，无法可靠提取验证结果。" }],
@@ -683,9 +844,12 @@ export class MasRunner {
         "结论：当前问题不是新任务缺少验收合同，而是已有 run 没有正常收口。应先看上面最后的 audit/approval 事件处理卡点，再决定是否重跑或清理旧 run。",
       ].join("\n");
       const decision: HaDecision = {
+        intent_type: "status_query",
         next_action: "answer",
         response,
         acceptance_contract: "",
+        readonly_input_paths: [],
+        allowed_output_paths: [],
         rationale: "用户询问运行状态，且同一会话或工作目录存在未收口 running run；优先返回本地审计诊断，避免重复进入 execute。",
       };
       this.store.addAgentRun({
@@ -701,6 +865,7 @@ export class MasRunner {
     }
     if (isRoleHealthCheckQuestion(prompt)) {
       const decision: HaDecision = {
+        intent_type: "execution_task",
         next_action: "execute",
         response: "",
         acceptance_contract: [
@@ -729,6 +894,8 @@ export class MasRunner {
           "- 检查本 run 是否出现 ego completed agent_run。",
           "- 检查本 run 是否出现 superego completed agent_run 或明确的 superego parse/repair 失败记录。",
         ].join("\n"),
+        readonly_input_paths: [],
+        allowed_output_paths: [options.cwd],
         rationale: "用户显式要求测试 Ego 和 Superego 是否正常，应触发最小 dry-run 真实经过 Ego/Superego，而不是 HA 只查历史状态。",
       };
       this.store.addAgentRun({
@@ -742,20 +909,27 @@ export class MasRunner {
       this.store.audit({ runId, actor: "ha", action: "route_decided", payload: decision });
       return decision;
     }
-    const ha = await createPiSession({
-      cwd: options.cwd,
-      runId,
-      sessionId,
-      role: "ha",
-      phase: "route",
-      iteration: 0,
-      approvalMode: "deny-writes",
-      model: options.model,
-      sink,
-      recordApproval: (input) => this.store.addApproval({ runId, ...input }),
-      recordEvent: (input) => this.store.addEvent(input),
-      memoryTools: this.createMemoryToolProvider(sessionId, runId),
-    });
+    let ha: Awaited<ReturnType<typeof createPiSession>>;
+    try {
+      ha = await createPiSession({
+        cwd: options.cwd,
+        runId,
+        sessionId,
+        role: "ha",
+        phase: "route",
+        iteration: 0,
+        approvalMode: "deny-writes",
+        model: options.model,
+        sink,
+        recordApproval: (input) => this.store.addApproval({ runId, ...input }),
+        recordEvent: (input) => this.store.addEvent(input),
+        memoryTools: this.createMemoryToolProvider(sessionId, runId),
+      });
+    } catch (error) {
+      const diagnostic = classifyAgentBackendError(error);
+      this.store.audit({ runId, actor: "ha", action: "route_session_failed", payload: { error: diagnostic } });
+      return haFrameworkFailureDecision("路由", diagnostic);
+    }
     const abortHa = () => void ha.abort();
     options.signal?.addEventListener("abort", abortHa, { once: true });
     try {
@@ -768,49 +942,80 @@ export class MasRunner {
         trigger: "intent_check",
         sourceRefs: [`run:${runId}:user_task`],
       });
-      let reviewText = await ha.prompt(buildHaDecisionPrompt(task, this.perturbations.render(perturbation)));
-      let decision = ha.haDecision();
-      if (!decision) {
+      let reviewText: string;
+      try {
+        reviewText = await ha.prompt(buildHaDecisionPrompt(task, this.perturbations.render(perturbation), options.cwd));
+      } catch (error) {
+        const diagnostic = classifyAgentBackendError(error);
+        this.store.addAgentRun({
+          runId,
+          role: "ha",
+          iteration: 0,
+          status: "failed",
+          input: { prompt, task, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+          output: { error: diagnostic, stage: "route" },
+        });
+        this.store.audit({ runId, actor: "ha", action: "route_prompt_failed", payload: { error: diagnostic } });
+        return haFrameworkFailureDecision("路由", diagnostic);
+      }
+      let capturedDecision = ha.haDecision();
+      let decision: HaDecision;
+      try {
+        decision = capturedDecision ? parseHaDecision(JSON.stringify(capturedDecision)) : parseHaDecision(reviewText);
+      } catch (error) {
+        const firstError = error instanceof Error ? error : new Error(String(error));
+        const failedOutput = capturedDecision ? JSON.stringify(capturedDecision, null, 2) : reviewText;
+        this.store.addAgentRun({
+          runId,
+          role: "ha",
+          iteration: 0,
+          status: "failed",
+          input: { prompt, task, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+          output: { text: failedOutput, error: firstError.message, orchestrationMode: mode },
+        });
+        this.store.audit({ runId, actor: "ha", action: "route_parse_failed", payload: { message: firstError.message } });
+        ha.clearStructuredOutput("ha_decision");
         try {
-          decision = parseHaDecision(reviewText);
+          reviewText = await ha.prompt(buildHaDecisionRepairPrompt(failedOutput, firstError.message));
         } catch (error) {
-          const firstError = error instanceof Error ? error : new Error(String(error));
+          const diagnostic = classifyAgentBackendError(error);
           this.store.addAgentRun({
             runId,
             role: "ha",
             iteration: 0,
             status: "failed",
-            input: { prompt, task, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
-            output: { text: reviewText, error: firstError.message, orchestrationMode: mode },
+            input: { prompt, task, repair: true, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+            output: { error: diagnostic, stage: "route_repair" },
           });
-          this.store.audit({ runId, actor: "ha", action: "route_parse_failed", payload: { message: firstError.message } });
-          reviewText = await ha.prompt(buildHaDecisionRepairPrompt(reviewText, firstError.message));
-          decision = ha.haDecision();
-          if (!decision) {
-            try {
-              decision = parseHaDecision(reviewText);
-            } catch (repairError) {
-              const err = repairError instanceof Error ? repairError : new Error(String(repairError));
-              this.store.addAgentRun({
-                runId,
-                role: "ha",
-                iteration: 0,
-                status: "failed",
-                input: { prompt, task, repair: true, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
-                output: { text: reviewText, error: err.message, orchestrationMode: mode },
-              });
-              this.store.audit({ runId, actor: "ha", action: "route_repair_failed", payload: { message: err.message } });
-              return {
-                next_action: "clarify",
-                response: "我没能稳定生成内部路由决策，当前请求没有开始执行。请重新发送一次任务；如果任务涉及安装、写文件或执行命令，我会发起可审批的操作。",
-                acceptance_contract: "",
-                rationale: `HA 路由 JSON 解析失败且自修复失败：${err.message}`,
-              };
-            }
-          }
+          this.store.audit({ runId, actor: "ha", action: "route_repair_prompt_failed", payload: { error: diagnostic } });
+          return haFrameworkFailureDecision("路由修复", diagnostic);
+        }
+        capturedDecision = ha.haDecision();
+        try {
+          decision = capturedDecision ? parseHaDecision(JSON.stringify(capturedDecision)) : parseHaDecision(reviewText);
+        } catch (repairError) {
+          const err = repairError instanceof Error ? repairError : new Error(String(repairError));
+          const repairedOutput = capturedDecision ? JSON.stringify(capturedDecision, null, 2) : reviewText;
+          this.store.addAgentRun({
+            runId,
+            role: "ha",
+            iteration: 0,
+            status: "failed",
+            input: { prompt, task, repair: true, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+            output: { text: repairedOutput, error: err.message, orchestrationMode: mode },
+          });
+          this.store.audit({ runId, actor: "ha", action: "route_repair_failed", payload: { message: err.message } });
+          return {
+            intent_type: "conversation",
+            next_action: "clarify",
+            response: "我没能稳定生成内部路由决策，当前请求没有开始执行。请重新发送一次任务；如果任务涉及安装、写文件或执行命令，我会发起可审批的操作。",
+            acceptance_contract: "",
+            readonly_input_paths: [],
+            allowed_output_paths: [],
+            rationale: `HA 路由 JSON 解析失败且自修复失败：${err.message}`,
+          };
         }
       }
-      decision = parseHaDecision(JSON.stringify(decision));
       this.store.addAgentRun({
         runId,
         role: "ha",
@@ -854,20 +1059,27 @@ export class MasRunner {
     throwIfAborted(options.signal);
     this.store.audit({ runId, actor: "ha", action: "final_review_started", payload: { iteration, hasSuperego: Boolean(superegoCritique) } });
     emitStage(sink, "HA 终验开始。");
-    const ha = await createPiSession({
-      cwd: options.cwd,
-      runId,
-      sessionId,
-      role: "ha",
-      phase: "final_review",
-      iteration,
-      approvalMode: "deny-writes",
-      model: options.model,
-      sink,
-      recordApproval: (input) => this.store.addApproval({ runId, ...input }),
-      recordEvent: (input) => this.store.addEvent(input),
-      memoryTools: this.createMemoryToolProvider(sessionId, runId),
-    });
+    let ha: Awaited<ReturnType<typeof createPiSession>>;
+    try {
+      ha = await createPiSession({
+        cwd: options.cwd,
+        runId,
+        sessionId,
+        role: "ha",
+        phase: "final_review",
+        iteration,
+        approvalMode: "deny-writes",
+        model: options.model,
+        sink,
+        recordApproval: (input) => this.store.addApproval({ runId, ...input }),
+        recordEvent: (input) => this.store.addEvent(input),
+        memoryTools: this.createMemoryToolProvider(sessionId, runId),
+      });
+    } catch (error) {
+      const diagnostic = classifyAgentBackendError(error);
+      this.store.audit({ runId, actor: "ha", action: "final_review_session_failed", payload: { iteration, error: diagnostic } });
+      return haFrameworkFailureReview("终验", diagnostic);
+    }
     const abortHa = () => void ha.abort();
     options.signal?.addEventListener("abort", abortHa, { once: true });
     try {
@@ -881,10 +1093,27 @@ export class MasRunner {
         critique: superegoCritique,
         sourceRefs: [`run:${runId}:ego_result`, superegoCritique ? `run:${runId}:superego_review` : `run:${runId}:contract`],
       });
-      const reviewText = await ha.prompt(
-        buildHaFinalReviewPrompt(task, contract, JSON.stringify(egoResult, null, 2), superegoCritique, this.perturbations.render(perturbation), auditArtifact ? renderRunArtifactPrompt(auditArtifact) : ""),
-      );
-      const review = enforceHaFinalReviewGate(await this.parseHaFinalReviewWithRepair(reviewText, ha, prompt, task, contract, runId, iteration), { egoResult });
+      let reviewText = "";
+      let review: CritiqueResult;
+      try {
+        reviewText = await ha.prompt(
+          buildHaFinalReviewPrompt(task, contract, JSON.stringify(egoResult, null, 2), superegoCritique, this.perturbations.render(perturbation), auditArtifact ? renderRunArtifactPrompt(auditArtifact) : ""),
+        );
+        review = enforceHaFinalReviewGate(await this.parseHaFinalReviewWithRepair(reviewText, ha, prompt, task, contract, runId, iteration), { egoResult });
+      } catch (error) {
+        const diagnostic = classifyAgentBackendError(error);
+        review = haFrameworkFailureReview("终验", diagnostic);
+        this.store.addAgentRun({
+          runId,
+          role: "ha",
+          iteration,
+          status: "failed",
+          input: { prompt, task, contract, stage: "final_review", superegoCritique, auditArtifact, contextInjection },
+          output: { text: reviewText, error: diagnostic, review },
+        });
+        this.store.audit({ runId, actor: "ha", action: "final_review_prompt_failed", payload: { iteration, error: diagnostic, review } });
+        return review;
+      }
       this.store.addAgentRun({
         runId,
         role: "ha",
@@ -992,6 +1221,106 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error("MAS run 已取消");
 }
 
+type AgentBackendDiagnostic = ReturnType<typeof classifyAgentBackendError>;
+
+function agentBackendFailureEgoResult(role: "Ego", diagnostic: AgentBackendDiagnostic): EgoResult {
+  return {
+    status: diagnostic.retryable ? "needs_attention" : "blocked",
+    summary: `${role} 模型/后端调用失败：${diagnostic.code}`,
+    final_response: `${role} 没有完成执行，因为模型/后端接口返回错误：${diagnostic.code}。${diagnostic.message}`,
+    evidence: [
+      `errorCode=${diagnostic.code}`,
+      `retryable=${diagnostic.retryable}`,
+      diagnostic.status !== undefined ? `httpStatus=${diagnostic.status}` : "httpStatus=未提供",
+    ],
+    changed_files: [],
+    verification: [{ command: "", result: "not_run", notes: "模型/后端接口失败，未进入可验证执行结果。" }],
+    risks: ["这是执行层模型/后端健康问题，不是用户业务口径问题；需要 HA 判断是否重试、切换模型或提示用户处理配置/额度/服务可用性。"],
+  };
+}
+
+function isAgentBackendFailureEgoResult(egoResult: EgoResult): boolean {
+  return egoResult.summary.startsWith("Ego 模型/后端调用失败：");
+}
+
+function routeAgentBackendFailureToCritique(role: "Ego", egoResult: EgoResult, iteration: number): CritiqueResult {
+  return {
+    blocking_issues: 1,
+    quality_score: 0,
+    summary: `${role} 第 ${iteration} 轮模型/后端调用失败，不能交给 Superego 做业务审计：${egoResult.summary}`,
+    next_action: "escalate",
+    entropyDelta: "unknown",
+    evidenceQuality: 0,
+    remainingUncertainty: 1,
+    nextBestObservation: "交给 HA 判断是否重试、切换模型、恢复 provider 配置/认证/额度，或直接向用户显示后端健康问题。",
+    critique_items: [
+      {
+        category: "agent_backend_error",
+        severity: "high",
+        suggestion: egoResult.final_response,
+      },
+    ],
+  };
+}
+
+function agentBackendFailureCritique(role: "Superego", diagnostic: AgentBackendDiagnostic, iteration: number): CritiqueResult {
+  return {
+    blocking_issues: 1,
+    quality_score: 0,
+    summary: `${role} 第 ${iteration} 轮模型/后端调用失败：${diagnostic.code}。该问题已交给 HA 判断。`,
+    next_action: "escalate",
+    entropyDelta: "unknown",
+    evidenceQuality: 0,
+    remainingUncertainty: 1,
+    nextBestObservation: "HA 应基于 Ego 结果、AuditPacket 和 Superego 失败诊断判断是否可跳过 Superego、重试、切换模型，或提示用户处理后端配置。",
+    critique_items: [
+      {
+        category: "agent_backend_error",
+        severity: "high",
+        suggestion: `${role} 模型/后端接口失败：code=${diagnostic.code}, retryable=${diagnostic.retryable}, status=${diagnostic.status ?? "未提供"}, message=${diagnostic.message}`,
+      },
+    ],
+  };
+}
+
+function haFrameworkFailureDecision(stage: string, diagnostic: AgentBackendDiagnostic): HaDecision {
+  return {
+    intent_type: "conversation",
+    next_action: "answer",
+    response: formatHaFrameworkFailureText(stage, diagnostic),
+    acceptance_contract: "",
+    readonly_input_paths: [],
+    allowed_output_paths: [],
+    rationale: `HA ${stage}阶段模型/后端失败：${diagnostic.code}`,
+  };
+}
+
+function haFrameworkFailureReview(stage: string, diagnostic: AgentBackendDiagnostic): CritiqueResult {
+  return {
+    blocking_issues: 1,
+    quality_score: 0,
+    summary: formatHaFrameworkFailureText(stage, diagnostic),
+    next_action: "escalate",
+    entropyDelta: "unknown",
+    evidenceQuality: 0,
+    remainingUncertainty: 1,
+    nextBestObservation: diagnostic.retryable ? "可在恢复 provider 后重试，或切换 HA 模型后重跑终验。" : "需要修复 HA 模型配置、认证、模型名或 provider 后再继续。",
+    critique_items: [
+      {
+        category: "ha_backend_error",
+        severity: "high",
+        suggestion: `HA ${stage}阶段无法完成：code=${diagnostic.code}, retryable=${diagnostic.retryable}, status=${diagnostic.status ?? "未提供"}, message=${diagnostic.message}`,
+      },
+    ],
+  };
+}
+
+function formatHaFrameworkFailureText(stage: string, diagnostic: AgentBackendDiagnostic): string {
+  const retry = diagnostic.retryable ? "这个错误可能是临时性的，可以稍后重试或切换模型。" : "这个错误通常需要修复模型配置、认证、模型名或 provider。";
+  const status = diagnostic.status !== undefined ? `HTTP 状态：${diagnostic.status}。` : "";
+  return `HA ${stage}阶段无法正常运行，MAS 已直接显示框架诊断。\n\n错误码：${diagnostic.code}\n${status}\n错误信息：${diagnostic.message}\n${retry}`;
+}
+
 export function enforceHaFinalReviewGate(review: CritiqueResult, context?: { egoResult?: EgoResult }): CritiqueResult {
   if (review.next_action === "accept" && context?.egoResult && context.egoResult.status !== "completed") {
     return {
@@ -1054,6 +1383,53 @@ export function routeEgoAttentionToCritique(egoResult: EgoResult, iteration: num
         suggestion: `Ego 状态为 ${egoResult.status}。如果缺口不是用户输入、外部凭据、审批拒绝或硬环境限制，应继续执行而不是停止。`,
       },
       ...egoResult.risks.slice(0, 6).map((risk) => ({
+        category: "ego_reported_risk",
+        severity: "medium" as const,
+        suggestion: risk,
+      })),
+    ],
+  };
+}
+
+export function isEgoStructuredOutputFailure(egoResult: EgoResult): boolean {
+  return (
+    egoResult.status === "needs_attention" &&
+    egoResult.summary.startsWith("Ego 执行结果 JSON 解析失败且自修复失败：") &&
+    egoResult.evidence.length === 0 &&
+    egoResult.changed_files.length === 0 &&
+    egoResult.verification.length === 1 &&
+    egoResult.verification[0]?.result === "not_run" &&
+    egoResult.verification[0]?.notes.includes("Ego 结构化输出解析失败")
+  );
+}
+
+export function routeEgoStructuredFailureToCritique(egoResult: EgoResult, iteration: number, consecutiveFailures: number, threshold: number): CritiqueResult {
+  const reachedThreshold = consecutiveFailures >= threshold;
+  return {
+    blocking_issues: 1,
+    quality_score: 0,
+    summary: `Ego 第 ${iteration} 轮未提交可解析结构化结果（连续 ${consecutiveFailures}/${threshold}）。这是执行层通信/结构化输出失败，不能交给 Superego 重新审计空结果。`,
+    next_action: reachedThreshold ? "escalate" : "revise",
+    entropyDelta: "unknown",
+    evidenceQuality: 0,
+    remainingUncertainty: 1,
+    nextBestObservation: reachedThreshold
+      ? "交给 HA 从用户代理视角判断：是否存在可自动恢复路径，还是需要向用户报告 Ego 后端/模型连续空响应。"
+      : "直接打回 Ego：下一轮必须先完成任务或明确真实阻塞，并调用 ego_result 提交结构化结果。",
+    critique_items: [
+      {
+        category: "ego_structured_output_failure",
+        severity: "high",
+        suggestion: "Ego 没有形成可审计交付物。Superego 不应审计空结果；应由框架把该失败作为下一轮 Ego 的返工输入。",
+      },
+      {
+        category: "recovery_instruction",
+        severity: reachedThreshold ? "high" : "medium",
+        suggestion: reachedThreshold
+          ? "Ego 连续结构化失败达到阈值，交给 HA 判断是否需要人工介入或更换/恢复执行后端。"
+          : "下一轮 Ego 必须调用 ego_result；如果工具调用不可用，需要在可见文本中输出完整 JSON 结构，不能静默结束。",
+      },
+      ...egoResult.risks.slice(0, 4).map((risk) => ({
         category: "ego_reported_risk",
         severity: "medium" as const,
         suggestion: risk,

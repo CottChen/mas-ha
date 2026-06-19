@@ -134,8 +134,8 @@ Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执
 
 1. AionUI 通过 ACP 调用 MAS。
 2. MAS 恢复 `sessionId` 对应的会话摘要、最近消息、技能摘要和运行配置。
-3. HA 判断直接回答、澄清或进入执行；进入执行前可做本地只读 intake，读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文。
-4. HA 生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。
+3. HA 先生成结构化路由意图 `intent_type`：`conversation`、`status_query`、`read_only_analysis` 或 `execution_task`。对话、状态查询和只读分析由 HA 直接处理；只有 `execution_task` 可以进入 Ego。
+4. 对 `execution_task`，HA 进入执行前可做本地只读 intake，读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文，并生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。
 5. MAS 生成边界 baseline snapshot。
 6. Ego 按验收合同执行任务，提交 `ego_result`。
 7. MAS 将完整 AuditPacket 持久化为 run artifact，并向 Superego 注入摘要、索引和关键风险。
@@ -145,6 +145,8 @@ Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执
 11. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
 
 Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结束为人工介入，而是把它转成内部返工/验收信号。Superego 如果返回 `escalate`，MAS 也不会直接结束，而是先交给 HA 终验裁决；只有 HA 确认需要用户补充需求、确认取舍、提供外部凭据/权限，或系统轮次上限耗尽且无自动推进路径时，run 才进入用户可见的 `needs_attention`。
+
+Ego 未提交 `ego_result` 且没有可解析 JSON 时，MAS 将其识别为执行层结构化输出失败，而不是可供 Superego 审计的业务结果。该类失败默认直接打回 Ego；连续 3 轮仍失败时，MAS 跳过 Superego 并交给 HA 判断是否需要人工介入或恢复执行后端。
 
 未启用 Superego 的 `ha-ego` 模式仍保留 HA 终验；只是跳过系统审计评审和返工环节。
 
@@ -203,9 +205,16 @@ Superego 不能只依赖 Ego 自报。MAS 在评审前构造完整 AuditPacket�
 - 写入路径与 `changed_files` 对账。
 - 用户/验收合同声明的允许输出边界和只读输入边界的当前状态与历史留痕。
 - 边界目录轻量 metadata snapshot/diff。
+- `agentHealth` 角色模型健康诊断，包括模型解析结果、空输出、auto retry、typed tool 是否提交和错误事件。
 - 面向 Superego 的只读抽样复核建议。
 
 确定性审计门禁高于模型输出。当前仍存在违反允许输出边界、只读输入污染或失败验证伪装成功时，即使模型评审返回 `accept`，MAS 也会强制进入内部 `revise` 或升级信号；真正面向用户的人工介入必须由 HA 终验决定。允许输出边界来自用户任务和 HA 验收合同；未显式要求 `output/` 时，greenfield 项目源码、文档和配置可以写在 workspace 根目录内。
+
+角色模型健康不是技能职责。模型不可用、provider 配置错误、Pi auto retry 后空输出或 typed tool 链路失败时，Ego 本身可能无法调用任何健康检查技能；MAS 框架必须从 Pi/MAS 事件中生成确定性 `agentHealth` 证据，并让 Superego/HA 基于该证据判断是自动恢复、换模型、返工，还是由 HA 代表用户提示人工介入。
+
+HA 路由阶段必须在 `ha_decision` 中给出 `readonly_input_paths` 和 `allowed_output_paths`。MAS 框架负责把这些路径规范化为绝对路径、去重并写入 AuditPacket；后续写入和只读输入检查按规范化路径集合做精确匹配。HA 的文本验收合同用于解释边界意图，但不再作为主要门禁来源。
+
+输出边界文本推断只作为旧合同兼容兜底，必须识别明确约束，而不是做宽泛子串匹配。只有独立路径段 `output/`、`./output/`、工作区下的 `output/`，或明确“只能/必须写入输出目录”的语义才会触发 `output_dir` 门禁；`playwright-output/`、`test-output/` 这类工具产物目录名不能被当作 workspace `output/` 硬约束。
 
 ## 存储与会话
 

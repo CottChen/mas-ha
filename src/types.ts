@@ -589,8 +589,13 @@ export interface BoundaryDiff {
 export interface AuditPacket {
   cwd: string;
   outputDir: string;
+  boundaryDeclarations: {
+    source: "ha_decision" | "contract_text_fallback";
+    readonlyInputPaths: string[];
+    allowedOutputPaths: string[];
+  };
   outputBoundary: {
-    mode: "workspace_root" | "output_dir";
+    mode: "workspace_root" | "output_dir" | "declared_paths";
     reason: string;
     allowedRoots: string[];
   };
@@ -606,6 +611,27 @@ export interface AuditPacket {
   boundaryDiffPolicy: {
     mode: "lightweight_boundary_metadata";
     rules: string[];
+  };
+  agentHealth: {
+    observations: Array<{
+      role: RoleName;
+      iteration: number;
+      requestedModelId?: string;
+      resolvedModelId?: string;
+      thinkingLevel?: string;
+      modelSource?: string;
+      warning?: string;
+      promptCompletions: Array<{ outputChars: number }>;
+      latestOutputChars?: number;
+      autoRetryCount: number;
+      toolCalls: string[];
+      structuredResultSubmitted: boolean;
+      errorEvents: Array<{ type: string; message?: string }>;
+      explicitError?: { code: string; message: string; status?: number; retryable?: boolean };
+      diagnosis: "healthy" | "model_config_error" | "backend_error" | "stream_empty_after_retry" | "structured_output_missing" | "suspicious";
+      reasons: string[];
+    }>;
+    findings: AuditFinding[];
   };
   approvals: Array<{
     toolCallId: string;
@@ -660,9 +686,12 @@ export interface EgoResult {
 }
 
 export interface HaDecision {
+  intent_type: "conversation" | "status_query" | "read_only_analysis" | "execution_task";
   next_action: "answer" | "execute" | "clarify";
   response: string;
   acceptance_contract: string;
+  readonly_input_paths: string[];
+  allowed_output_paths: string[];
   rationale: string;
 }
 

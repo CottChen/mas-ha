@@ -98,6 +98,21 @@ export interface PiRoleModelSummary {
   warning?: string;
 }
 
+export interface AgentBackendErrorInfo {
+  code:
+    | "auth_failed"
+    | "rate_limited"
+    | "model_not_found"
+    | "provider_unavailable"
+    | "network_timeout"
+    | "network_error"
+    | "provider_error"
+    | "unknown";
+  message: string;
+  status?: number;
+  retryable: boolean;
+}
+
 export async function getPiBackendModelSummary(cwd = process.cwd(), runModel?: string): Promise<PiBackendModelSummary> {
   try {
     const pi = await loadPiSdk();
@@ -235,10 +250,17 @@ export async function createPiSession(options: PiSessionOptions): Promise<PiSess
       text = "";
       literalThinkRouter.reset();
       recordMasEvent(options, "mas.agent_prompt.started", { promptChars: promptText.length });
-      await session.prompt(promptText);
-      literalThinkRouter.flush();
-      recordMasEvent(options, "mas.agent_prompt.completed", { outputChars: text.length });
-      return text;
+      try {
+        await session.prompt(promptText);
+        literalThinkRouter.flush();
+        recordMasEvent(options, "mas.agent_prompt.completed", { outputChars: text.length });
+        return text;
+      } catch (error) {
+        literalThinkRouter.flush();
+        const diagnostic = classifyAgentBackendError(error);
+        recordMasEvent(options, "mas.agent_prompt.failed", { outputChars: text.length, error: diagnostic });
+        throw error;
+      }
     },
     async abort() {
       await session.abort();
@@ -639,6 +661,47 @@ function rawPiEventForStorage(type: string, event: any): unknown {
   if (type === "message_start" || type === "message_end") return undefined;
   if (type === "agent_end" || type === "turn_end") return undefined;
   return event;
+}
+
+export function classifyAgentBackendError(error: unknown): AgentBackendErrorInfo {
+  const record = error && typeof error === "object" ? (error as Record<string, unknown>) : {};
+  const status = numericStatus(record.status) ?? numericStatus(record.statusCode) ?? numericStatus(record.code);
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const message = redactSensitiveText(rawMessage).slice(0, 1200);
+  const combined = `${status ?? ""} ${message}`.toLowerCase();
+  if (status === 401 || status === 403 || /unauthorized|forbidden|invalid api key|api[_ -]?key|authentication|auth failed/.test(combined)) {
+    return { code: "auth_failed", message, status, retryable: false };
+  }
+  if (status === 404 || /model.*not.*found|not found.*model|unknown model|invalid model/.test(combined)) {
+    return { code: "model_not_found", message, status, retryable: false };
+  }
+  if (status === 429 || /rate limit|too many requests|quota|throttle/.test(combined)) {
+    return { code: "rate_limited", message, status, retryable: true };
+  }
+  if (status !== undefined && status >= 500) {
+    return { code: "provider_unavailable", message, status, retryable: true };
+  }
+  if (/timeout|timed out|etimedout|aborterror/.test(combined)) {
+    return { code: "network_timeout", message, status, retryable: true };
+  }
+  if (/econnreset|enotfound|eai_again|network|fetch failed|socket|connection/.test(combined)) {
+    return { code: "network_error", message, status, retryable: true };
+  }
+  if (status !== undefined) return { code: "provider_error", message, status, retryable: status >= 500 || status === 408 };
+  return { code: "unknown", message, retryable: false };
+}
+
+function numericStatus(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^\d{3}$/.test(value)) return Number(value);
+  return undefined;
+}
+
+function redactSensitiveText(text: string): string {
+  return text
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, "sk-<redacted>")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer <redacted>")
+    .replace(/api[_ -]?key[=:]\s*['"]?[^'"\s,}]+/gi, "apiKey=<redacted>");
 }
 
 export function isReadOnlyTool(toolName: string): boolean {
@@ -1293,11 +1356,23 @@ function haDecisionToolSpec(): StructuredOutputToolSpec<HaDecision> {
     promptSnippet: "提交 MAS HA 内部路由决策",
     promptGuidelines: ["HA 路由时必须调用 ha_decision 作为最终动作；调用后不要继续输出文本。"],
     parameters: Type.Object({
+      intent_type: Type.Union(
+        [Type.Literal("conversation"), Type.Literal("status_query"), Type.Literal("read_only_analysis"), Type.Literal("execution_task")],
+        {
+          description: "用户意图类型；只有 execution_task 可以进入 Ego 执行",
+        },
+      ),
       next_action: Type.Union([Type.Literal("answer"), Type.Literal("execute"), Type.Literal("clarify")], {
         description: "下一步动作",
       }),
       response: Type.String({ description: "answer/clarify 时给用户的中文回复；execute 时为空字符串" }),
       acceptance_contract: Type.String({ description: "execute 时的验收合同；answer/clarify 时为空字符串" }),
+      readonly_input_paths: Type.Array(Type.String({ description: "用户提供且不应被 Ego 修改的本地输入文件/目录绝对路径；没有则为空数组" }), {
+        description: "只读输入边界",
+      }),
+      allowed_output_paths: Type.Array(Type.String({ description: "Ego 被允许创建、修改或删除的本地文件/目录绝对路径；无法缩小时使用当前工作目录" }), {
+        description: "允许输出边界",
+      }),
       rationale: Type.String({ description: "简短说明路由理由" }),
     }),
     resultText: "HA decision captured",

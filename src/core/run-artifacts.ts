@@ -80,9 +80,12 @@ export function renderRunArtifactPrompt(ref: RunArtifactRef): string {
 }
 
 function summarizeAuditPacket(audit: AuditPacket): RunArtifactSummary {
+  const unhealthyAgents = audit.agentHealth.observations.filter((item) => item.diagnosis !== "healthy");
   const highlights = [
     `outputBoundary=${audit.outputBoundary.mode}: ${audit.outputBoundary.reason}`,
+    `boundaryDeclarations=${audit.boundaryDeclarations.source}: readonly=${audit.boundaryDeclarations.readonlyInputPaths.length}, allowedOutputs=${audit.boundaryDeclarations.allowedOutputPaths.length}`,
     `findings=${audit.findings.length}${audit.findings.length ? ` (${audit.findings.map((finding) => `${finding.severity}/${finding.category}`).join(", ")})` : ""}`,
+    `agentHealth=${unhealthyAgents.length ? unhealthyAgents.map((item) => `${item.role}#${item.iteration}:${item.diagnosis}`).join(", ") : "healthy"}`,
   ];
   if (audit.currentWritesOutsideOutput.length > 0) highlights.push(`当前允许输出边界外写入：${audit.currentWritesOutsideOutput.slice(0, 5).join("; ")}`);
   if (audit.currentWritesToReadOnlyInputs.length > 0) highlights.push(`当前只读输入路径写入：${audit.currentWritesToReadOnlyInputs.slice(0, 5).join("; ")}`);
@@ -93,6 +96,8 @@ function summarizeAuditPacket(audit: AuditPacket): RunArtifactSummary {
     sections: [
       "summary",
       "findings",
+      "agentHealth",
+      "boundaryDeclarations",
       "outputBoundary",
       "approvals_tail",
       "writes_tail",
@@ -106,6 +111,7 @@ function summarizeAuditPacket(audit: AuditPacket): RunArtifactSummary {
       writes: audit.writes.length,
       commands: audit.commands.length,
       commandSideEffects: audit.commandSideEffects.length,
+      agentHealthFindings: audit.agentHealth.findings.length,
       findings: audit.findings.length,
       currentWritesOutsideOutput: audit.currentWritesOutsideOutput.length,
       currentWritesToReadOnlyInputs: audit.currentWritesToReadOnlyInputs.length,
@@ -122,8 +128,12 @@ function selectSection(data: unknown, section: string): unknown {
       return summarizeAuditPacket(audit);
     case "findings":
       return audit.findings;
+    case "agentHealth":
+      return audit.agentHealth;
     case "outputBoundary":
       return audit.outputBoundary;
+    case "boundaryDeclarations":
+      return audit.boundaryDeclarations;
     case "approvals_tail":
       return audit.approvals.slice(-30);
     case "writes_tail":

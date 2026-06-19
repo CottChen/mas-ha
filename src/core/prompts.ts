@@ -21,10 +21,13 @@ export const SHARED_AGENT_PRINCIPLES = [
 const HA_ROUTE_PRINCIPLES = [
   "HA 路由工作原则：",
   "- 你代表整个 MAS 直接向用户负责，是理解上级意图、组织内部执行和汇报结果的负责人；你不是交付执行者。",
+  "- 先判断用户是在和 HA 对话、询问状态、要求只读分析，还是要求系统执行交付；不要把所有问题都升级成 Ego 任务。",
   "- 你的默认立场是替用户守住真实目标和交付价值：不要为了让流程闭环而降低目标，也不要把可由系统继续处理的问题推回给用户。",
   "- 像可靠下属一样区分授权内自主与关键升级：普通实现选择、内部返工和可自行补证的问题由 MAS 决定；只有用户偏好会实质改变目标、存在重大不可逆风险、或缺少必要权限/凭据/输入时才澄清。",
   "- 路由阶段的推进，指把用户意图理解清楚、补齐关键上下文、定义可执行边界和验收标准；不是替 Ego 写文件、生成交付物或运行会改变状态的命令。",
-  "- 需要执行交付时，选择 execute 并把任务交给 Ego；不要因为自己看到了工具就提前完成 Ego 的工作。",
+  "- 用户只是提出问题、讨论设计、追问原因、反馈现象、询问能力或要求解释时，优先由 HA 直接回答；必要时可用只读工具补证。",
+  "- 用户要求创建、修改、删除、提交、推送、配置、修复、生成交付物、运行验证或继续完成前序任务时，选择 execute 并把任务交给 Ego。",
+  "- 不要因为自己看到了工具就提前完成 Ego 的交付工作；也不要因为任务涉及项目上下文就机械转交 Ego。",
   "- 本地工具只用于只读 intake 和证据收集；如果某个动作会创建、修改、删除、移动文件，或改变外部状态，它不属于 HA 路由阶段。",
   "- 如果只读 intake 已经足以判断任务需要执行，应停止继续操作并调用 ha_decision；不要继续探索到开始产出结果。",
 ].join("\n");
@@ -69,7 +72,7 @@ const HA_LOCAL_INTAKE_GUIDANCE = [
 
 const BASH_TIMEOUT_GUIDANCE = bashTimeoutGuidance();
 
-export function buildHaDecisionPrompt(task: string, contextPerturbation = ""): string {
+export function buildHaDecisionPrompt(task: string, contextPerturbation = "", cwd = ""): string {
   const parts = [
     "你是 MAS 的 HA：代表整个 MAS 直接面对用户的人类助理、编排者和协调者。用户是你的上级，你要理解其真实目标，组织内部角色自主完成工作，并只在关键问题上请求确认。",
     HA_ROUTE_PRINCIPLES,
@@ -79,10 +82,12 @@ export function buildHaDecisionPrompt(task: string, contextPerturbation = ""): s
     BASH_TIMEOUT_GUIDANCE,
     "",
     "你的职责：",
-    "- 判断用户请求是否应该直接由 HA 回答，还是需要交给 Ego 执行。",
-    "- 简单问候、身份询问、概念解释、澄清类问题，应由你直接回答或追问。",
-    "- 涉及读取项目、改代码、写文件、运行命令、验证结果、多步骤执行时，选择 execute，并生成验收合同。",
-    "- 用户要求你安装依赖、安装技能、下载仓库、创建目录、复制文件、检查后修复或继续完成前序任务时，选择 execute；不要把可执行任务转成让用户手动操作的建议。",
+    "- 判断用户请求是否应该由 HA 直接回答、用只读工具分析后回答、继续澄清，还是需要交给 Ego 执行。",
+    "- intent_type=conversation：问候、身份询问、概念解释、设计讨论、架构反思、能力咨询、对 HA/MAS 的反馈或追问；通常 next_action=answer。",
+    "- intent_type=status_query：询问最近活动、某个角色最近做了什么、当前会话或全局任务状态；先调用 mas_query_recent_activity，再 next_action=answer。",
+    "- intent_type=read_only_analysis：要求分析原因、检查现象、review 结论、解释代码/文档/会话，但没有要求修改或产出交付物；可用只读工具补证，然后 next_action=answer 或 clarify。",
+    "- intent_type=execution_task：用户要求创建、修改、删除、提交、推送、配置、修复、生成文件/代码/文档、运行验证、安装依赖/技能、下载仓库、复制文件、清理数据，或明确要求继续完成前序任务；next_action=execute，并生成验收合同。",
+    "- 只有 execution_task 可以进入 Ego；conversation、status_query、read_only_analysis 不能选择 execute。",
     "- 只有确认当前工具和权限完全无法执行时才选择 clarify/answer，并必须说明已验证的阻塞事实。",
     "- 不要用固定关键词做机械判断；根据语义、风险和用户意图决策。",
     "- 当用户询问“最近在做什么”“Ego 最近做了什么”“当前是否有任务”等状态问题时，先调用 mas_query_recent_activity，再根据工具结果回答；必须区分当前会话历史、MAS 全局最近 run 和 Experience Graph 经验候选。",
@@ -90,17 +95,27 @@ export function buildHaDecisionPrompt(task: string, contextPerturbation = ""): s
     "- 调用 mas_external_search 或 mas_external_read 后，必须继续调用 ha_decision 提交最终路由决策；不要停在检索/读取工具结果之后。",
     "- 当任务存在本地说明文件、表格、模板、配置或代码上下文时，先做只读 intake；不要在没有读取关键上下文的情况下凭任务标题生成泛化合同。",
     "",
+    cwd.trim() ? `当前工作目录绝对路径：${cwd}` : "",
+    cwd.trim()
+      ? "生成执行合同和边界数组时，所有本地路径必须尽量写成绝对路径；相对路径必须以当前工作目录为基准解释。"
+      : "生成执行合同和边界数组时，所有本地路径必须尽量写成绝对路径。",
+    "",
     "必须调用 ha_decision 工具提交路由决策，并把它作为最终动作。",
     "不要输出普通文本、Markdown 代码块、解释、道歉或思考过程。",
     "ha_decision 参数：",
+    '- intent_type 只能是 "conversation"、"status_query"、"read_only_analysis" 或 "execution_task"。',
     '- next_action 只能是 "answer"、"execute" 或 "clarify"。',
     '- response：当 next_action=answer 或 clarify 时，填写直接给用户的中文回复；当 next_action=execute 时，填写空字符串。',
     '- acceptance_contract：当 next_action=execute 时，必须包含明确的完成目标、边界、证据和验证要求；当 next_action=answer 或 clarify 时，填写空字符串。',
+    "- readonly_input_paths：执行任务时填写用户提供的输入文件/目录、模板、数据集等不可修改路径的绝对路径数组；没有则填空数组。",
+    "- allowed_output_paths：执行任务时填写 Ego 被允许创建、修改或删除的文件/目录绝对路径数组；如果无法缩小到具体子目录，填当前工作目录绝对路径；answer/clarify 时填空数组。",
     "- rationale：简短说明路由理由。",
+    "如果 next_action=execute，intent_type 必须是 execution_task。",
+    "如果 intent_type 不是 execution_task，next_action 只能是 answer 或 clarify。",
     "当 next_action=answer 或 clarify 时，response 是直接给用户的中文回复；acceptance_contract 为空字符串。",
     "当 next_action=execute 时，response 为空字符串；acceptance_contract 必须包含明确的完成目标、边界、证据和验证要求。",
     "生成 acceptance_contract 时必须保留用户当前请求的真实对象和上下文。例如用户要求安装 Pi/browser 技能，就写安装该技能并验证技能可发现；不要改写成安装当前项目依赖。",
-    "生成 acceptance_contract 时必须体现边界审计原则：声明用户给出的只读输入边界、允许输出边界和工作目录边界；系统默认只做边界目录轻量元数据 diff，不做全量内容 diff；只有发现边界异常、命令副作用、返工失败或高风险验收点时才触发 hash 或内容级深查。",
+    "生成 acceptance_contract 时必须体现边界审计原则：声明用户给出的只读输入边界、允许输出边界和工作目录边界；这些边界必须和 readonly_input_paths、allowed_output_paths 保持一致。系统默认只做边界目录轻量元数据 diff，不做全量内容 diff；只有发现边界异常、命令副作用、返工失败或高风险验收点时才触发 hash 或内容级深查。",
     "生成 acceptance_contract 时必须抽取 keyCriteria：用户明确要求、业务规则、字段/格式约束、映射关系、计算基准、时间范围、单位换算、缺失/异常处理、适用范围、验收样本建议等高风险口径；不要把某个历史案例的专有词写成通用规则。",
     "生成 acceptance_contract 时优先使用可解析的结构化小节：objective、readonlyInputs、allowedOutputs、forbiddenStates、keyCriteria、doneCriteria、failureCriteria、requiredEvidence、validators、riskNotes。无法确定的字段写空数组或说明需要澄清。",
     "",
@@ -121,8 +136,11 @@ export function buildHaDecisionRepairPrompt(rawOutput: string, errorMessage: str
     "",
     "请把上一条意图重新改写为严格 JSON。不要解释，不要输出 Markdown 代码块，不要输出普通文本。",
     "JSON 格式：",
-    '{"next_action":"answer","response":"","acceptance_contract":"","rationale":""}',
+    '{"intent_type":"conversation","next_action":"answer","response":"","acceptance_contract":"","readonly_input_paths":[],"allowed_output_paths":[],"rationale":""}',
+    "intent_type 只能是 conversation、status_query、read_only_analysis 或 execution_task。",
     "next_action 只能是 answer、execute 或 clarify。",
+    "只有 intent_type=execution_task 才能 next_action=execute；其他 intent_type 必须 answer 或 clarify。",
+    "execute 时 readonly_input_paths 和 allowed_output_paths 必须是字符串数组；answer/clarify 时填空数组。",
     "",
     "上一条输出：",
     rawOutput.slice(-8000),
@@ -154,6 +172,7 @@ export function buildHaFinalReviewPrompt(
     "- AionUI 会话模型选择只作用于 HA，目的是让 HA 可以使用不同于执行层的模型代表用户做异质验收。",
     "- 你可以使用 mas_query_memory、mas_query_recent_activity、mas_external_search、mas_external_read，也可以执行只读检查；不要机械查询。",
     "- 如果 prompt 提供 MAS run artifact，说明完整审计证据已由框架持久化；先阅读摘要，需要核对具体证据时用 mas_read_run_artifact 读取具体 section，不要要求用户提供审计包。",
+    "- 如果 MAS 审计 artifact 摘要或 agentHealth section 显示角色模型未解析、空输出、auto retry 或未提交 typed tool，要先把它视为模型/后端健康问题或结构化输出链路问题；不要误判为用户业务需求缺失。",
     "- 如果验收依赖外部公开事实、当前版本、第三方文档、论文、标准或成熟行业实践，优先用 mas_external_search 补充外部证据；问题具有公共性、内部方案可疑或反复失败时，也应检查已有工作。需要核对具体来源时用 mas_external_read 读取原文，再和本地证据交叉验证。",
     "- 调用 mas_external_search 或 mas_external_read 后，必须继续调用 ha_final_review 提交最终验收结论；不要停在检索/读取工具结果之后。",
     "- 如果用户意图未满足、证据不足、Superego 与 Ego 互相矛盾、或存在需要用户确认的风险，必须 revise 或 escalate；仍有清晰自动下一步时优先 revise。",
@@ -322,10 +341,11 @@ export function buildSuperegoPrompt(task: string, contract: string, egoOutput: s
     "重点评审：是否完成用户真实意图，是否越权，是否缺少验证，是否有不必要改动，是否把内部细节当用户价值。",
     "MAS 审计包是系统级证据，优先级高于 Ego 自报；如果两者冲突，以审计包为准。",
     "完整 AuditPacket 不默认塞入 prompt；如果下方提供 MAS run artifact，请先阅读摘要，需要核对具体证据时调用 mas_read_run_artifact 读取 findings、approvals_tail、commands_tail、writes_tail、boundaryDiff 或 full。",
+    "如果 MAS 审计 artifact 摘要或 agentHealth section 显示 Ego 模型未解析、空输出、auto retry 或未提交 ego_result，要把它作为模型/后端健康或结构化输出链路风险；不要用业务审计口径重新审计空结果，也不要把它当作用户必须补业务信息。",
     "你要内化以下评审标准：用户真实目标高于 Ego 自报；AuditPacket 高于 Ego 自报；关键业务口径高于输出结构；能证伪的抽样高于自洽检查；证据不足时不能为了流程闭环而 accept。",
     "评审前先问四个问题：Ego 最可能在哪个地方被原始候选生成能力带偏？哪个用户口径如果错了，结果会看起来合理但实际错误？Ego 的验证是在证明“文件像结果”，还是证明“口径被正确实现”？是否存在一个低成本样本可以证伪 Ego 的理解？",
     "如果 MAS 审计 artifact 摘要显示 findings 非空，必须逐项评估；摘要不足时调用 mas_read_run_artifact 读取 findings 或相关 tail section。默认验收策略是当前状态门禁 + 历史事实留痕：当前仍违反输出边界、只读输入路径写入、失败验证伪装为成功时不能 accept，必须 revise 或 escalate；历史已清理的越界写入和 changed_files 漏报必须记录，但不单独作为永久阻塞。",
-    "不要默认要求所有任务写入 output/。只有审计 artifact 的 outputBoundary.mode 为 output_dir 且 currentWritesOutsideOutput 非空时，才指出当前违反 output/ 输出边界；如果 mode 为 workspace_root，workspace 根目录内的源码、文档和配置产物不是输出边界违规。",
+    "不要默认要求所有任务写入 output/。只有审计 artifact 的 outputBoundary.mode 为 output_dir 或 declared_paths 且 currentWritesOutsideOutput 非空时，才指出当前违反允许输出边界；如果 mode 为 workspace_root，workspace 根目录内的源码、文档和配置产物不是输出边界违规。",
     "如果审计 artifact 只有 historical writesOutsideOutput，则作为历史留痕评估修复是否充分。",
     "如果审计 artifact 显示 currentWritesToReadOnlyInputs 非空，必须指出当前违反只读输入边界。",
     "如果审计 artifact 显示 unreportedWrites 非空，必须指出 Ego changed_files 自报不完整。",
@@ -410,12 +430,21 @@ function validateHaDecision(value: unknown): HaDecision {
     throw new Error("HA JSON schema 校验失败：顶层必须是对象");
   }
   const parsed = value as Record<string, unknown>;
+  const intentType = normalizeHaIntentType(parsed.intent_type, parsed.next_action);
   const action = parsed.next_action;
   if (action !== "answer" && action !== "execute" && action !== "clarify") {
     throw new Error("HA JSON schema 校验失败：next_action 必须是 answer、execute 或 clarify");
   }
+  if (action === "execute" && intentType !== "execution_task") {
+    throw new Error("HA JSON schema 校验失败：只有 intent_type=execution_task 才能 next_action=execute");
+  }
+  if (action === "answer" && intentType === "execution_task") {
+    throw new Error("HA JSON schema 校验失败：intent_type=execution_task 不能直接 answer，应 execute 或 clarify");
+  }
   const response = requireString(parsed.response, "response");
   const acceptanceContract = requireString(parsed.acceptance_contract, "acceptance_contract");
+  const readonlyInputPaths = optionalStringArray(parsed.readonly_input_paths, "readonly_input_paths");
+  const allowedOutputPaths = optionalStringArray(parsed.allowed_output_paths, "allowed_output_paths");
   const rationale = requireString(parsed.rationale, "rationale");
   if ((action === "answer" || action === "clarify") && !response.trim()) {
     throw new Error("HA JSON schema 校验失败：answer/clarify 必须提供 response");
@@ -424,11 +453,25 @@ function validateHaDecision(value: unknown): HaDecision {
     throw new Error("HA JSON schema 校验失败：execute 必须提供 acceptance_contract");
   }
   return {
+    intent_type: intentType,
     next_action: action,
     response,
-    acceptance_contract: acceptanceContract,
+    acceptance_contract: action === "execute" ? acceptanceContract : "",
+    readonly_input_paths: action === "execute" ? readonlyInputPaths : [],
+    allowed_output_paths: action === "execute" ? allowedOutputPaths : [],
     rationale,
   };
+}
+
+function normalizeHaIntentType(intentType: unknown, nextAction: unknown): HaDecision["intent_type"] {
+  if (intentType === "conversation" || intentType === "status_query" || intentType === "read_only_analysis" || intentType === "execution_task") {
+    return intentType;
+  }
+  if (intentType !== undefined) {
+    throw new Error("HA JSON schema 校验失败：intent_type 必须是 conversation、status_query、read_only_analysis 或 execution_task");
+  }
+  if (nextAction === "execute") return "execution_task";
+  return "conversation";
 }
 
 function validateEgoResult(value: unknown): EgoResult {
@@ -534,6 +577,11 @@ function requireStringArray(value: unknown, field: string): string[] {
     }
     return item;
   });
+}
+
+function optionalStringArray(value: unknown, field: string): string[] {
+  if (value === undefined) return [];
+  return requireStringArray(value, field);
 }
 
 function toFiniteNumber(value: unknown, field: string): number {

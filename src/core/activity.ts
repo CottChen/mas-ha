@@ -126,13 +126,14 @@ function summarizeAgentRuns(agentRuns: AgentRunRecord[]): string[] {
     const result = asRecord(output.result);
     const decision = asRecord(output.decision);
     const critique = asRecord(output.critique);
+    const intent = stringValue(decision.intent_type);
     const summary =
       stringValue(result.summary) ??
       stringValue(decision.rationale) ??
       stringValue(critique.summary) ??
       stringValue(output.text)?.replace(/\s+/g, " ").slice(0, 120) ??
       "";
-    return `${agentRun.role}[${agentRun.status}]${summary ? `: ${summary}` : ""}`;
+    return `${agentRun.role}[${agentRun.status}]${intent ? `[${intent}]` : ""}${summary ? `: ${summary}` : ""}`;
   });
 }
 

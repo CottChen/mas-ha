@@ -132,6 +132,58 @@
 - 复测日期：
 - 复测结果：本地 `npm run typecheck` 和 `npm run doctor` 通过；仍待重启 AionUI 自定义 ACP Agent 后真实会话复测。
 
+## BUG-20260619-001：`playwright-output/` 被审计门禁误判为必须写入 workspace `output/`
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 会话 `custom-temp-5db26da7` 排查 + 本地修复
+- 修复摘要：`ha_decision` 新增 `readonly_input_paths` 和 `allowed_output_paths`，HA 在合同阶段显式声明只读输入和允许输出路径；MAS 将这些路径规范化后写入 AuditPacket 并做精确匹配。文本推断仅作为旧合同兜底，且不再用宽泛 `\boutput[\\/]` 子串规则推断 `output_dir`；`playwright-output/`、`test-output/` 等工具产物目录名不再触发 workspace `output/` 硬门禁。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：复用 `custom-temp-5db26da7` 这类合同中包含 `redalert/test-artifacts/playwright-output/` 的任务，且允许修改项目源码和测试文件；运行到 Superego 审计阶段并读取 AuditPacket artifact。
+- 通过标准：新 run 的 `ha_decision.allowed_output_paths` 明确包含允许修改的项目路径，AuditPacket `boundaryDeclarations.source` 为 `ha_decision` 且 `outputBoundary.mode` 为 `declared_paths`；旧合同兜底时 `playwright-output/` 只作为普通工具产物路径，不作为 `output/` 输出边界约束；`currentWritesOutsideOutput` 不因 `redalert/client/src/menu.ts`、`redalert/client/tests/*.spec.ts` 触发 `output_boundary/high`。
+- 复测人：
+- 复测日期：
+- 复测结果：本地使用 `custom-temp-5db26da7` 真实 HA 合同回归验证：合同包含 `playwright-output/`，旧合同兜底推断结果为 `workspace_root`；声明 `allowedOutputPaths=<workspace>/redalert` 时 AuditPacket 使用 `declared_paths` 和 `ha_decision` 来源；`npm run typecheck` 通过。仍待真实 AionUI 会话复测。
+
+## BUG-20260619-002：Ego 连续空输出后 Superego 反复审计空结果
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 会话 `custom-temp-8fb94e00` 排查 + 本地修复
+- 修复摘要：Ego 未提交 `ego_result` 且没有可解析 JSON 时，MAS 将其识别为执行层结构化输出失败，不再进入 Superego 审计。默认前 2 次直接把框架批注作为下一轮 Ego 返工输入；连续 3 次失败时写入 AuditPacket artifact 并交给 HA 判断是否需要人工介入或恢复执行后端。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：构造 Ego 连续空输出或拒绝提交 `ego_result` 的会话，观察第 1、2 次是否跳过 Superego 并直接进入下一轮 Ego，第 3 次是否进入 HA 终验。
+- 通过标准：结构化失败轮次不出现 `mas.superego.review.completed`；出现 `mas.ego.structured_failure.direct_revise` 审计事件；连续 3 次后用户可见结论必须来自 HA 终验，而不是 Superego 批注。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 `npm run typecheck`、`npm run doctor`、`npm run e2e:smoke` 通过；结构化失败分类和 3 次阈值路由断言通过。真实 AionUI 会话待复测。
+
+## BUG-20260619-003：旧 `audit_packet_built` 审计事件未转换为低熵 `audit_finding`
+
+- 严重级别：P2
+- 状态：pending-verification
+- 修复来源：本地 `npm run e2e:smoke` 回归失败
+- 修复摘要：`recordRunEntropy()` 同时支持旧 `audit_packet_built` 和新 `audit_packet_artifact_written` 审计事件；旧事件中的 `findings` 会转换为低熵 `audit_finding` 信号，避免历史审计记录和测试夹具丢失风险信号。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：运行 `npm run e2e:smoke`，确认 `AuditPacket 应转换为低熵 audit_finding 信号` 断言通过。
+- 通过标准：旧 `audit_packet_built` payload 中的 findings 能生成至少一条 `audit_finding`；新 artifact 摘要路径保持可用。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 `npm run typecheck`、`npm run doctor`、`npm run e2e:smoke` 通过。
+
+## BUG-20260619-004：角色模型/后端不可用未被 HA/Superego 识别
+
+- 严重级别：P1
+- 状态：pending-verification
+- 修复来源：AionUI 会话 `custom-temp-8fb94e00` 复盘 + 本地修复
+- 修复摘要：Pi prompt 调用失败时记录 `mas.agent_prompt.failed` 事件，包含脱敏后的明确错误码、HTTP 状态和 retryable 标记；AuditPacket 新增 `agentHealth`，区分 `backend_error`、`model_config_error`、`stream_empty_after_retry`、`structured_output_missing` 和 `suspicious`。Ego 明确后端错误直接交给 HA 判断，不进入 Superego 业务审计；Superego 自身失败会构造评审批注并交给 HA；HA 自身失败由 MAS 框架直接显示给用户。
+- 待复测版本或提交：当前工作区未提交改动
+- 复测步骤：分别构造 Ego、Superego、HA 的无效 key、无效模型名、provider 5xx/timeout 或空输出场景；观察 run artifact 的 `agentHealth` section 和用户可见结果。
+- 通过标准：明确接口错误优先显示错误码和 retryable；typed tool 缺失不被误判为模型不可用；Superego 失败时 HA 能看到诊断；HA 失败时用户直接看到 MAS 框架诊断。
+- 复测人：
+- 复测日期：
+- 复测结果：本地 `npm run typecheck`、`npm run doctor`、`npm run e2e:smoke` 通过；本地无外部模型断言确认 `agentHealth` 能把 `auth_failed` 转为 `backend_error`，且有文本输出但未提交 typed tool 不误报为模型不可用。真实 AionUI 会话待复测。
+
 ## 记录模板
 
 ```md

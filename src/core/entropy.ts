@@ -49,6 +49,29 @@ function collectSignals(store: MasStore, input: RunEntropyInput): LowEntropySign
   }
 
   for (const audit of store.listAuditLog(input.runId, 300)) {
+    if (audit.action === "audit_packet_built") {
+      const payload = asRecord(audit.payload);
+      const findings = Array.isArray(payload.findings) ? payload.findings : [];
+      if (findings.length === 0) {
+        signals.push(baseSignal(input, {
+          type: "audit_finding",
+          summary: "AuditPacket built with no findings.",
+          confidence: 0.7,
+          sourceKind: "derived",
+          payload: { action: audit.action, findingCount: 0 },
+        }));
+      }
+      for (const finding of findings) {
+        const item = asRecord(finding);
+        signals.push(baseSignal(input, {
+          type: "audit_finding",
+          summary: `AuditPacket finding: ${[item.severity, item.category, item.message].filter(Boolean).map(String).join(" - ").slice(0, 700)}`,
+          confidence: item.severity === "high" ? 0.85 : 0.75,
+          sourceKind: "derived",
+          payload: { action: audit.action, finding },
+        }));
+      }
+    }
     if (audit.action === "audit_packet_artifact_written") {
       const payload = asRecord(audit.payload);
       const summary = asRecord(payload.summary);

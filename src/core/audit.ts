@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { basename, isAbsolute, normalize, resolve } from "node:path";
 import { MasStore } from "../storage.js";
-import type { AuditFinding, AuditPacket, BoundaryDiff, BoundaryFileMetadata, BoundaryScopeKind, BoundarySnapshot, BoundarySnapshotScope, EgoResult } from "../types.js";
+import type { AuditFinding, AuditPacket, BoundaryDiff, BoundaryFileMetadata, BoundaryScopeKind, BoundarySnapshot, BoundarySnapshotScope, EgoResult, RoleName } from "../types.js";
 
 const DEFAULT_MAX_SNAPSHOT_ENTRIES_PER_SCOPE = 2000;
 const DEFAULT_OUTPUT_DEPTH = 4;
@@ -10,11 +10,21 @@ const DEFAULT_WORKSPACE_DEPTH = 1;
 
 export function buildAuditPacket(
   store: MasStore,
-  input: { runId: string; cwd: string; egoResult: EgoResult; boundarySnapshot?: BoundarySnapshot; task?: string; contract?: string },
+  input: {
+    runId: string;
+    cwd: string;
+    egoResult: EgoResult;
+    boundarySnapshot?: BoundarySnapshot;
+    task?: string;
+    contract?: string;
+    boundaryDeclarations?: { readonlyInputPaths?: string[]; allowedOutputPaths?: string[] };
+  },
 ): AuditPacket {
   const cwd = normalizePath(input.cwd);
   const outputDir = normalizePath(resolve(input.cwd, "output"));
-  const outputBoundary = inferOutputBoundary({ cwd, outputDir, task: input.task ?? "", contract: input.contract ?? "" });
+  const declaredReadonlyInputPaths = normalizeDeclaredPaths(input.boundaryDeclarations?.readonlyInputPaths ?? [], input.cwd);
+  const declaredAllowedOutputPaths = normalizeDeclaredPaths(input.boundaryDeclarations?.allowedOutputPaths ?? [], input.cwd);
+  const outputBoundary = inferOutputBoundary({ cwd, outputDir, task: input.task ?? "", contract: input.contract ?? "", allowedOutputPaths: declaredAllowedOutputPaths });
   const approvals = store.listApprovals(input.runId);
   const writes = approvals.flatMap((approval) =>
     extractWritePaths(approval.rawInput).map((path) => {
@@ -25,7 +35,7 @@ export function buildAuditPacket(
         path: normalized,
         inOutputDir: isInOutputBoundary(normalized, outputBoundary),
         inCwd: isSubPath(normalized, cwd),
-        inReadOnlyInput: isReadOnlyInputPath(normalized),
+        inReadOnlyInput: isReadOnlyInputPath(normalized, declaredReadonlyInputPaths),
       };
     }),
   );
@@ -39,7 +49,7 @@ export function buildAuditPacket(
       ...effect,
       inOutputDir: isInOutputBoundary(effect.path, outputBoundary),
       inCwd: isSubPath(effect.path, cwd),
-      inReadOnlyInput: isReadOnlyInputPath(effect.path),
+      inReadOnlyInput: isReadOnlyInputPath(effect.path, declaredReadonlyInputPaths),
     })),
   );
   const egoChangedFiles = input.egoResult.changed_files.map((path) => normalizeTaskPath(path, input.cwd));
@@ -49,8 +59,13 @@ export function buildAuditPacket(
   const writesToReadOnlyInputs = writes.filter((write) => write.inReadOnlyInput).map((write) => write.path);
   const currentWritesToReadOnlyInputs = writes.filter((write) => write.inReadOnlyInput && existsSync(write.path)).map((write) => write.path);
   const boundaryDiff = input.boundarySnapshot
-    ? diffBoundarySnapshot(input.boundarySnapshot, createBoundarySnapshot({ cwd: input.cwd, task: input.task ?? "", contract: input.contract ?? "" }), outputBoundary)
+    ? diffBoundarySnapshot(
+        input.boundarySnapshot,
+        createBoundarySnapshot({ cwd: input.cwd, task: input.task ?? "", contract: input.contract ?? "", boundaryDeclarations: input.boundaryDeclarations }),
+        outputBoundary,
+      )
     : undefined;
+  const agentHealth = buildAgentHealth(store, input.runId);
   const findings = buildFindings({
     unreportedWrites,
     writesOutsideOutput,
@@ -59,11 +74,17 @@ export function buildAuditPacket(
     currentWritesToReadOnlyInputs,
     boundaryDiff,
     commandSideEffects,
+    agentHealthFindings: agentHealth.findings,
   });
 
   return {
     cwd,
     outputDir,
+    boundaryDeclarations: {
+      source: declaredReadonlyInputPaths.length > 0 || declaredAllowedOutputPaths.length > 0 ? "ha_decision" : "contract_text_fallback",
+      readonlyInputPaths: declaredReadonlyInputPaths,
+      allowedOutputPaths: declaredAllowedOutputPaths,
+    },
     outputBoundary,
     suggestedSamplingStrategy: buildSuggestedSamplingStrategy(),
     boundaryDiffPolicy: {
@@ -74,6 +95,7 @@ export function buildAuditPacket(
         "只有出现命令副作用、审计矛盾、返工失败或高风险数据任务时，才触发更深的 hash 或内容级检查。",
       ],
     },
+    agentHealth,
     approvals,
     writes,
     commands,
@@ -89,14 +111,17 @@ export function buildAuditPacket(
   };
 }
 
-function inferOutputBoundary(input: { cwd: string; outputDir: string; task: string; contract: string }): AuditPacket["outputBoundary"] {
+export function inferOutputBoundary(input: { cwd: string; outputDir: string; task: string; contract: string; allowedOutputPaths?: string[] }): AuditPacket["outputBoundary"] {
+  const declaredAllowedOutputPaths = normalizeDeclaredPaths(input.allowedOutputPaths ?? [], input.cwd);
+  if (declaredAllowedOutputPaths.length > 0) {
+    return {
+      mode: "declared_paths",
+      reason: "HA ha_decision 显式声明允许输出路径，MAS 将按规范化后的路径集合精确匹配。",
+      allowedRoots: declaredAllowedOutputPaths,
+    };
+  }
   const combined = `${input.task}\n${input.contract}`;
-  const explicitOutputOnly = [
-    /\boutput[\\/]/i,
-    /output\s*(目录|文件夹|子目录)/i,
-    /(只|仅|必须).{0,20}(output|输出目录|输出文件夹)/i,
-    /(输出|产物).{0,20}(必须|只|仅).{0,20}(output|输出目录|输出文件夹)/i,
-  ].some((pattern) => pattern.test(combined));
+  const explicitOutputOnly = hasExplicitOutputBoundary(combined);
   if (explicitOutputOnly) {
     return {
       mode: "output_dir",
@@ -109,6 +134,26 @@ function inferOutputBoundary(input: { cwd: string; outputDir: string; task: stri
     reason: "用户任务或验收合同未要求 output/ 子目录；greenfield 项目源码、文档和配置允许写在 workspace 根目录内。",
     allowedRoots: [input.cwd],
   };
+}
+
+function hasExplicitOutputBoundary(text: string): boolean {
+  const guardedOutputPath = /(?:^|[\s`"'([{（【]|[\\/])(?:\.{1,2}[\\/])?output[\\/]/i;
+  const guardedOutputDirName = /(?:^|[\s`"'([{（【])output\s*(目录|文件夹|子目录)/i;
+  const explicitChineseOutputDir = /(?:只|仅|必须|只能|不得).{0,24}(输出目录|输出文件夹)|(?:输出目录|输出文件夹).{0,24}(只|仅|必须|只能|不得)/i;
+  if (guardedOutputPath.test(text) || guardedOutputDirName.test(text) || explicitChineseOutputDir.test(text)) return true;
+
+  const outputPathMentions = extractGuardedOutputPathMentions(text);
+  if (outputPathMentions.length === 0) return false;
+  const strongConstraint = /(?:只|仅|必须|只能|不得|forbiddenStates|allowedOutputs|允许输出|禁止状态)/i.test(text);
+  return strongConstraint;
+}
+
+function extractGuardedOutputPathMentions(text: string): string[] {
+  const mentions: string[] = [];
+  for (const match of text.matchAll(/(?:^|[\s`"'([{（【]|[\\/])((?:\.{1,2}[\\/])?output[\\/][^\s`"'<>|?*]*)/gi)) {
+    if (match[1]) mentions.push(match[1]);
+  }
+  return mentions;
 }
 
 function isInOutputBoundary(path: string, boundary: AuditPacket["outputBoundary"]): boolean {
@@ -143,8 +188,9 @@ function buildFindings(input: {
   currentWritesToReadOnlyInputs: string[];
   boundaryDiff?: BoundaryDiff;
   commandSideEffects: AuditPacket["commandSideEffects"];
+  agentHealthFindings: AuditFinding[];
 }): AuditFinding[] {
-  const findings: AuditFinding[] = [];
+  const findings: AuditFinding[] = [...input.agentHealthFindings];
   if (input.unreportedWrites.length > 0) {
     findings.push({
       category: "changed_files_mismatch",
@@ -223,10 +269,160 @@ function buildFindings(input: {
   return findings;
 }
 
+function buildAgentHealth(store: MasStore, runId: string): AuditPacket["agentHealth"] {
+  const observations = summarizeAgentHealthObservations(store.listEvents(runId, 1000));
+  const findings: AuditFinding[] = [];
+  for (const observation of observations) {
+    if (observation.diagnosis === "healthy") continue;
+    const severity = observation.diagnosis === "backend_error" || observation.diagnosis === "model_config_error" ? "high" : "medium";
+    findings.push({
+      category: observation.diagnosis === "structured_output_missing" ? "agent_structured_output" : "agent_model_health",
+      severity,
+      message:
+        observation.diagnosis === "backend_error"
+          ? `${roleLabel(observation.role)} 第 ${observation.iteration} 轮模型/后端接口报错：${observation.explicitError?.code ?? "unknown"}。`
+          : observation.diagnosis === "model_config_error"
+          ? `${roleLabel(observation.role)} 第 ${observation.iteration} 轮模型配置不可用。`
+          : observation.diagnosis === "stream_empty_after_retry"
+          ? `${roleLabel(observation.role)} 第 ${observation.iteration} 轮重试后仍为空输出。`
+          : observation.diagnosis === "structured_output_missing"
+          ? `${roleLabel(observation.role)} 第 ${observation.iteration} 轮未提交角色 typed tool。`
+          : `${roleLabel(observation.role)} 第 ${observation.iteration} 轮存在模型健康可疑信号。`,
+      evidence: [
+        `role=${observation.role}`,
+        `iteration=${observation.iteration}`,
+        `requested=${observation.requestedModelId ?? "未配置"}`,
+        `resolved=${observation.resolvedModelId ?? "未解析"}`,
+        `errorCode=${observation.explicitError?.code ?? "none"}`,
+        `latestOutputChars=${observation.latestOutputChars ?? "未记录"}`,
+        `autoRetryCount=${observation.autoRetryCount}`,
+        `structuredResultSubmitted=${observation.structuredResultSubmitted}`,
+        ...observation.reasons,
+      ],
+    });
+  }
+  return { observations, findings };
+}
+
+function summarizeAgentHealthObservations(events: ReturnType<MasStore["listEvents"]>): AuditPacket["agentHealth"]["observations"] {
+  const groups = new Map<string, AuditPacket["agentHealth"]["observations"][number]>();
+  const groupFor = (role: NonNullable<(typeof events)[number]["role"]>, iteration: number) => {
+    const key = `${role}:${iteration}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        role,
+        iteration,
+        promptCompletions: [],
+        autoRetryCount: 0,
+        toolCalls: [],
+        structuredResultSubmitted: false,
+        errorEvents: [],
+        diagnosis: "healthy",
+        reasons: [],
+      };
+      groups.set(key, group);
+    }
+    return group;
+  };
+
+  for (const event of events) {
+    if (!event.role || event.iteration === undefined) continue;
+    const group = groupFor(event.role, event.iteration);
+    const payload = asRecord(event.payload);
+    if (event.type === "mas.agent_session.created") {
+      const model = asRecord(payload.model);
+      group.requestedModelId = stringValue(model.requestedModelId);
+      group.resolvedModelId = stringValue(model.resolvedModelId);
+      group.thinkingLevel = stringValue(model.thinkingLevel);
+      group.modelSource = stringValue(model.source);
+      group.warning = stringValue(model.warning);
+    }
+    if (event.type === "mas.agent_model.warning") {
+      group.warning = stringValue(payload.warning) ?? group.warning;
+    }
+    if (event.type === "mas.agent_prompt.completed") {
+      const outputChars = numberValue(payload.outputChars);
+      if (outputChars !== undefined) group.promptCompletions.push({ outputChars });
+    }
+    if (event.type === "mas.agent_prompt.failed") {
+      const outputChars = numberValue(payload.outputChars);
+      if (outputChars !== undefined) group.promptCompletions.push({ outputChars });
+      const error = asRecord(payload.error);
+      const code = stringValue(error.code);
+      const message = stringValue(error.message);
+      if (code && message) {
+        group.explicitError = {
+          code,
+          message,
+          status: numberValue(error.status),
+          retryable: typeof error.retryable === "boolean" ? error.retryable : undefined,
+        };
+      }
+      group.errorEvents.push({ type: event.type, message: message ?? stringValue(payload.message) });
+    }
+    if (event.type === "pi.auto_retry_start") group.autoRetryCount += 1;
+    if (event.type === "pi.tool_execution_end") {
+      const toolName = stringValue(payload.toolName);
+      if (toolName) {
+        group.toolCalls.push(toolName);
+        if (toolName === resultToolForRole(event.role)) group.structuredResultSubmitted = true;
+      }
+      if (payload.isError === true) group.errorEvents.push({ type: event.type, message: stringValue(payload.message) });
+    }
+    if (event.type.includes("error") || payload.isError === true) {
+      group.errorEvents.push({ type: event.type, message: stringValue(payload.message) });
+    }
+  }
+
+  for (const group of groups.values()) {
+    group.latestOutputChars = group.promptCompletions.at(-1)?.outputChars;
+    const reasons: string[] = [];
+    if (group.warning) reasons.push(`modelWarning=${group.warning}`);
+    if (group.explicitError) reasons.push(`explicitError=${group.explicitError.code}: ${group.explicitError.message}`);
+    if (!group.resolvedModelId) reasons.push("模型未解析到 Pi 注册表中的可用模型");
+    if (group.latestOutputChars === 0) reasons.push("最近一次 prompt 完成但输出字符数为 0");
+    if (group.autoRetryCount > 0) reasons.push(`Pi auto retry ${group.autoRetryCount} 次`);
+    if (!group.structuredResultSubmitted && group.role !== "ha" && (group.latestOutputChars === 0 || group.latestOutputChars === undefined)) {
+      reasons.push(`未提交 ${resultToolForRole(group.role)} typed tool 且没有可见文本输出`);
+    }
+    if (group.errorEvents.length > 0) reasons.push(`错误事件 ${group.errorEvents.length} 条`);
+    group.reasons = unique(reasons);
+    if (!group.resolvedModelId || group.warning?.includes("未在 Pi 模型注册表中找到") || group.warning?.includes("不可用或未配置认证")) {
+      group.diagnosis = "model_config_error";
+    } else if (group.explicitError && group.explicitError.code !== "unknown") {
+      group.diagnosis = "backend_error";
+    } else if (group.latestOutputChars === 0 && !group.structuredResultSubmitted && group.autoRetryCount > 0) {
+      group.diagnosis = "stream_empty_after_retry";
+    } else if (!group.structuredResultSubmitted && group.role !== "ha" && (group.latestOutputChars === 0 || group.latestOutputChars === undefined)) {
+      group.diagnosis = "structured_output_missing";
+    } else if (group.warning || group.latestOutputChars === 0 || group.autoRetryCount > 0 || group.errorEvents.length > 0) {
+      group.diagnosis = "suspicious";
+    } else {
+      group.diagnosis = "healthy";
+    }
+  }
+
+  return Array.from(groups.values()).sort((a, b) => a.iteration - b.iteration || a.role.localeCompare(b.role));
+}
+
+function resultToolForRole(role: RoleName): string {
+  if (role === "ego") return "ego_result";
+  if (role === "superego") return "superego_review";
+  return "ha_decision";
+}
+
+function roleLabel(role: RoleName): string {
+  if (role === "ego") return "Ego";
+  if (role === "superego") return "Superego";
+  return "HA";
+}
+
 export function createBoundarySnapshot(input: {
   cwd: string;
   task: string;
   contract: string;
+  boundaryDeclarations?: { readonlyInputPaths?: string[]; allowedOutputPaths?: string[] };
   maxEntriesPerScope?: number;
   workspaceDepth?: number;
   outputDepth?: number;
@@ -245,6 +441,7 @@ function discoverBoundaryScopes(input: {
   cwd: string;
   task: string;
   contract: string;
+  boundaryDeclarations?: { readonlyInputPaths?: string[]; allowedOutputPaths?: string[] };
   workspaceDepth?: number;
   outputDepth?: number;
   readonlyDepth?: number;
@@ -254,10 +451,17 @@ function discoverBoundaryScopes(input: {
     { kind: "workspace_root", path: cwd, depth: input.workspaceDepth ?? DEFAULT_WORKSPACE_DEPTH },
     { kind: "output", path: normalizePath(resolve(input.cwd, "output")), depth: input.outputDepth ?? DEFAULT_OUTPUT_DEPTH },
   ];
-  for (const candidate of [resolve(input.cwd, "data"), resolve(input.cwd, "template"), ...extractAbsolutePaths(`${input.task}\n${input.contract}`)]) {
+  for (const outputPath of normalizeDeclaredPaths(input.boundaryDeclarations?.allowedOutputPaths ?? [], input.cwd)) {
+    if (!scopes.some((scope) => samePath(scope.path, outputPath))) {
+      scopes.push({ kind: "output", path: outputPath, depth: input.outputDepth ?? DEFAULT_OUTPUT_DEPTH });
+    }
+  }
+  const declaredReadonlyPaths = normalizeDeclaredPaths(input.boundaryDeclarations?.readonlyInputPaths ?? [], input.cwd);
+  for (const candidate of [resolve(input.cwd, "data"), resolve(input.cwd, "template"), ...declaredReadonlyPaths, ...extractAbsolutePaths(`${input.task}\n${input.contract}`)]) {
     const normalized = normalizePath(candidate);
     const name = basename(normalized);
-    if ((name === "data" || name === "template" || normalized.includes("/data/") || normalized.includes("/template/")) && !scopes.some((scope) => samePath(scope.path, normalized))) {
+    const declaredReadonly = declaredReadonlyPaths.some((path) => samePath(path, normalized));
+    if ((declaredReadonly || name === "data" || name === "template" || normalized.includes("/data/") || normalized.includes("/template/")) && !scopes.some((scope) => samePath(scope.path, normalized))) {
       scopes.push({ kind: "readonly_input", path: normalized, depth: input.readonlyDepth ?? DEFAULT_READONLY_DEPTH });
     }
   }
@@ -436,6 +640,18 @@ function normalizePath(path: string): string {
   return normalize(path).replace(/\\/g, "/").toLowerCase();
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function samePath(left: string, right: string): boolean {
   return normalizePath(left) === normalizePath(right);
 }
@@ -446,8 +662,13 @@ function isSubPath(path: string, parent: string): boolean {
   return normalized === normalizedParent || normalized.startsWith(`${normalizedParent}/`);
 }
 
-function isReadOnlyInputPath(path: string): boolean {
+function normalizeDeclaredPaths(paths: string[], cwd: string): string[] {
+  return unique(paths.map((path) => path.trim()).filter(Boolean).map((path) => normalizeTaskPath(path, cwd)));
+}
+
+function isReadOnlyInputPath(path: string, declaredReadonlyPaths: string[]): boolean {
   const normalized = normalizePath(path);
+  if (declaredReadonlyPaths.some((readonlyPath) => isSubPath(normalized, readonlyPath))) return true;
   return normalized.includes("/data/") || normalized.includes("/template/");
 }
 
