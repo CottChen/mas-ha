@@ -534,6 +534,7 @@ export interface CritiqueResult {
 export interface AuditFinding {
   category: string;
   severity: "low" | "medium" | "high";
+  gateOwner?: "ego" | "ha" | "none";
   message: string;
   evidence: string[];
 }
@@ -593,6 +594,11 @@ export interface AuditPacket {
     source: "ha_decision" | "contract_text_fallback";
     readonlyInputPaths: string[];
     allowedOutputPaths: string[];
+    conflicts: Array<{
+      readonlyInputPath: string;
+      allowedOutputPath: string;
+      reason: string;
+    }>;
   };
   outputBoundary: {
     mode: "workspace_root" | "output_dir" | "declared_paths";

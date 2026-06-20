@@ -214,6 +214,8 @@ Superego 不能只依赖 Ego 自报。MAS 在评审前构造完整 AuditPacket�
 
 HA 路由阶段必须在 `ha_decision` 中给出 `readonly_input_paths` 和 `allowed_output_paths`。MAS 框架负责把这些路径规范化为绝对路径、去重并写入 AuditPacket；后续写入和只读输入检查按规范化路径集合做精确匹配。HA 的文本验收合同用于解释边界意图，但不再作为主要门禁来源。
 
+审计门禁必须按责任归属路由，而不是按 `high` 一刀切打回 Ego。每个高风险 finding 需要能归到 `gateOwner=ego | ha | none`：Ego 可修复的当前产物违规才打回 Ego；合同边界歧义、框架审计矛盾、模型/后端健康问题等不属于 Ego 产物返工责任的问题，在 Superego 原始结论为 accept 时升级给 HA 判断。同一路径同时被声明为只读输入和允许输出只是其中一个实例，MAS 记录 `boundary_declaration_conflict`，但不会要求 Ego 反复修改无关产物。如果只读根目录下显式声明了允许输出子目录，允许输出子目录是只读检查的例外；如果允许输出根目录内另有更具体的只读子目录，该只读子目录仍受保护。
+
 输出边界文本推断只作为旧合同兼容兜底，必须识别明确约束，而不是做宽泛子串匹配。只有独立路径段 `output/`、`./output/`、工作区下的 `output/`，或明确“只能/必须写入输出目录”的语义才会触发 `output_dir` 门禁；`playwright-output/`、`test-output/` 这类工具产物目录名不能被当作 workspace `output/` 硬约束。
 
 ## 存储与会话

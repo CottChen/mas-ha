@@ -25,17 +25,19 @@ export function buildAuditPacket(
   const declaredReadonlyInputPaths = normalizeDeclaredPaths(input.boundaryDeclarations?.readonlyInputPaths ?? [], input.cwd);
   const declaredAllowedOutputPaths = normalizeDeclaredPaths(input.boundaryDeclarations?.allowedOutputPaths ?? [], input.cwd);
   const outputBoundary = inferOutputBoundary({ cwd, outputDir, task: input.task ?? "", contract: input.contract ?? "", allowedOutputPaths: declaredAllowedOutputPaths });
+  const boundaryDeclarationConflicts = findBoundaryDeclarationConflicts(declaredReadonlyInputPaths, outputBoundary.allowedRoots);
   const approvals = store.listApprovals(input.runId);
   const writes = approvals.flatMap((approval) =>
     extractWritePaths(approval.rawInput).map((path) => {
       const normalized = normalizeTaskPath(path, input.cwd);
+      const inOutputDir = isInOutputBoundary(normalized, outputBoundary);
       return {
         toolCallId: approval.toolCallId,
         toolName: approval.toolName,
         path: normalized,
-        inOutputDir: isInOutputBoundary(normalized, outputBoundary),
+        inOutputDir,
         inCwd: isSubPath(normalized, cwd),
-        inReadOnlyInput: isReadOnlyInputPath(normalized, declaredReadonlyInputPaths),
+        inReadOnlyInput: isProtectedReadOnlyInputPath(normalized, declaredReadonlyInputPaths, outputBoundary),
       };
     }),
   );
@@ -49,7 +51,7 @@ export function buildAuditPacket(
       ...effect,
       inOutputDir: isInOutputBoundary(effect.path, outputBoundary),
       inCwd: isSubPath(effect.path, cwd),
-      inReadOnlyInput: isReadOnlyInputPath(effect.path, declaredReadonlyInputPaths),
+      inReadOnlyInput: isProtectedReadOnlyInputPath(effect.path, declaredReadonlyInputPaths, outputBoundary),
     })),
   );
   const egoChangedFiles = input.egoResult.changed_files.map((path) => normalizeTaskPath(path, input.cwd));
@@ -67,6 +69,7 @@ export function buildAuditPacket(
     : undefined;
   const agentHealth = buildAgentHealth(store, input.runId);
   const findings = buildFindings({
+    boundaryDeclarationConflicts,
     unreportedWrites,
     writesOutsideOutput,
     currentWritesOutsideOutput,
@@ -84,6 +87,7 @@ export function buildAuditPacket(
       source: declaredReadonlyInputPaths.length > 0 || declaredAllowedOutputPaths.length > 0 ? "ha_decision" : "contract_text_fallback",
       readonlyInputPaths: declaredReadonlyInputPaths,
       allowedOutputPaths: declaredAllowedOutputPaths,
+      conflicts: boundaryDeclarationConflicts,
     },
     outputBoundary,
     suggestedSamplingStrategy: buildSuggestedSamplingStrategy(),
@@ -160,18 +164,53 @@ function isInOutputBoundary(path: string, boundary: AuditPacket["outputBoundary"
   return boundary.allowedRoots.some((root) => isSubPath(path, root));
 }
 
+function isProtectedReadOnlyInputPath(path: string, readonlyInputPaths: string[], outputBoundary: AuditPacket["outputBoundary"]): boolean {
+  const readonlyRoot = readonlyInputPaths.find((root) => isSubPath(path, root));
+  if (!readonlyRoot) return false;
+  return !isAllowedOutputExceptionForReadonlyScope(path, readonlyRoot, outputBoundary);
+}
+
+function isAllowedOutputExceptionForReadonlyScope(path: string, readonlyRoot: string, outputBoundary: AuditPacket["outputBoundary"]): boolean {
+  return outputBoundary.allowedRoots.some((allowedRoot) => {
+    if (!isSubPath(path, allowedRoot)) return false;
+    return samePath(allowedRoot, readonlyRoot) || isSubPath(allowedRoot, readonlyRoot);
+  });
+}
+
+function findBoundaryDeclarationConflicts(readonlyInputPaths: string[], allowedOutputPaths: string[]): AuditPacket["boundaryDeclarations"]["conflicts"] {
+  const conflicts: AuditPacket["boundaryDeclarations"]["conflicts"] = [];
+  for (const readonlyInputPath of readonlyInputPaths) {
+    for (const allowedOutputPath of allowedOutputPaths) {
+      if (!samePath(readonlyInputPath, allowedOutputPath)) continue;
+      conflicts.push({
+        readonlyInputPath,
+        allowedOutputPath,
+        reason: "同一路径不能同时表达绝对只读输入和允许写入输出；这是 HA 合同边界歧义，不是 Ego 可修复的产物缺陷。",
+      });
+    }
+  }
+  return conflicts;
+}
+
 export function enforceAuditGate(critique: import("../types.js").CritiqueResult, audit: AuditPacket): import("../types.js").CritiqueResult {
-  const blockingFindings = audit.findings.filter((finding) => finding.severity === "high");
-  if (blockingFindings.length === 0 || critique.next_action !== "accept") return critique;
+  const gateFindings = audit.findings.filter((finding) => finding.severity === "high" && (finding.gateOwner ?? "ego") !== "none");
+  if (gateFindings.length === 0 || critique.next_action !== "accept") return critique;
+  const egoRevisionFindings = gateFindings.filter((finding) => (finding.gateOwner ?? "ego") === "ego");
+  const haEscalationFindings = gateFindings.filter((finding) => finding.gateOwner === "ha");
+  const nextAction = egoRevisionFindings.length > 0 ? "revise" : "escalate";
+  const gateSummary =
+    nextAction === "revise"
+      ? `MAS 审计门禁发现 ${gateFindings.length} 个 Ego 可修复的阻塞性审计问题，已将 Superego 结论改为 revise。`
+      : `MAS 审计门禁发现 ${haEscalationFindings.length} 个不属于 Ego 产物返工责任的审计问题，已将 Superego 结论升级给 HA，未打回 Ego。`;
   return {
     ...critique,
-    blocking_issues: Math.max(critique.blocking_issues, blockingFindings.length),
+    blocking_issues: Math.max(critique.blocking_issues, gateFindings.length),
     quality_score: Math.min(critique.quality_score, 0.5),
-    next_action: "revise",
-    summary: `${critique.summary}\n\nMAS 审计门禁发现 ${blockingFindings.length} 个阻塞性审计问题，已将 Superego 结论改为 revise。`,
+    next_action: nextAction,
+    summary: `${critique.summary}\n\n${gateSummary}`,
     critique_items: [
       ...critique.critique_items,
-      ...blockingFindings.map((finding) => ({
+      ...gateFindings.map((finding) => ({
         category: finding.category,
         severity: finding.severity,
         suggestion: `${finding.message} 证据：${finding.evidence.join("; ")}`,
@@ -181,6 +220,7 @@ export function enforceAuditGate(critique: import("../types.js").CritiqueResult,
 }
 
 function buildFindings(input: {
+  boundaryDeclarationConflicts: AuditPacket["boundaryDeclarations"]["conflicts"];
   unreportedWrites: string[];
   writesOutsideOutput: string[];
   currentWritesOutsideOutput: string[];
@@ -191,6 +231,15 @@ function buildFindings(input: {
   agentHealthFindings: AuditFinding[];
 }): AuditFinding[] {
   const findings: AuditFinding[] = [...input.agentHealthFindings];
+  if (input.boundaryDeclarationConflicts.length > 0) {
+    findings.push({
+      category: "boundary_declaration_conflict",
+      severity: "high",
+      gateOwner: "ha",
+      message: "HA 合同同时把同一路径声明为只读输入和允许输出，Ego 无法通过返工修复该边界歧义，需要 HA 代表用户裁决。",
+      evidence: input.boundaryDeclarationConflicts.map((conflict) => `${conflict.readonlyInputPath} == ${conflict.allowedOutputPath}: ${conflict.reason}`),
+    });
+  }
   if (input.unreportedWrites.length > 0) {
     findings.push({
       category: "changed_files_mismatch",
@@ -278,6 +327,7 @@ function buildAgentHealth(store: MasStore, runId: string): AuditPacket["agentHea
     findings.push({
       category: observation.diagnosis === "structured_output_missing" ? "agent_structured_output" : "agent_model_health",
       severity,
+      gateOwner: severity === "high" ? "ha" : undefined,
       message:
         observation.diagnosis === "backend_error"
           ? `${roleLabel(observation.role)} 第 ${observation.iteration} 轮模型/后端接口报错：${observation.explicitError?.code ?? "unknown"}。`
@@ -538,13 +588,14 @@ function diffBoundarySnapshot(before: BoundarySnapshot, after: BoundarySnapshot,
   const outputScopes = scopes.filter((scope) => scope.kind === "output");
   const workspaceScopes = scopes.filter((scope) => scope.kind === "workspace_root");
   const isOutsideOutput = (path: string) => !isInOutputBoundary(path, outputBoundary);
+  const isProtectedReadonlyChange = (scopePath: string, path: string) => !isAllowedOutputExceptionForReadonlyScope(path, scopePath, outputBoundary);
   return {
     baselineAt: before.createdAt,
     comparedAt: after.createdAt,
     scopes,
-    readonlyCreated: readonlyScopes.flatMap((scope) => scope.created.map((entry) => entry.path)),
-    readonlyModified: readonlyScopes.flatMap((scope) => scope.modified.map((entry) => entry.after.path)),
-    readonlyDeleted: readonlyScopes.flatMap((scope) => scope.deleted.map((entry) => entry.path)),
+    readonlyCreated: readonlyScopes.flatMap((scope) => scope.created.map((entry) => entry.path).filter((path) => isProtectedReadonlyChange(scope.path, path))),
+    readonlyModified: readonlyScopes.flatMap((scope) => scope.modified.map((entry) => entry.after.path).filter((path) => isProtectedReadonlyChange(scope.path, path))),
+    readonlyDeleted: readonlyScopes.flatMap((scope) => scope.deleted.map((entry) => entry.path).filter((path) => isProtectedReadonlyChange(scope.path, path))),
     outputCreated: outputScopes.flatMap((scope) => scope.created.map((entry) => entry.path)),
     outputModified: outputScopes.flatMap((scope) => scope.modified.map((entry) => entry.after.path)),
     outputDeleted: outputScopes.flatMap((scope) => scope.deleted.map((entry) => entry.path)),

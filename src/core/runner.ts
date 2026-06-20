@@ -375,7 +375,7 @@ export class MasRunner {
             this.store.audit({
               runId,
               actor: "system",
-              action: "superego_accept_routed_to_revise",
+              action: critique.next_action === "escalate" ? "superego_accept_routed_to_ha_escalation" : "superego_accept_routed_to_revise",
               payload: { iteration, rawCritique, routedCritique: critique },
             });
           }
