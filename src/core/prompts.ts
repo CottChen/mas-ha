@@ -70,27 +70,39 @@ const HA_LOCAL_INTAKE_GUIDANCE = [
   "- 如果本地只读证据不足以生成可靠合同，应把缺口写入 acceptance_contract 的 riskNotes 或选择 clarify。",
 ].join("\n");
 
+const HA_RUN_MANAGEMENT_GUIDANCE = [
+  "HA run 连续性判断原则：",
+  "- 你管理的是用户目标在时间中的连续性，而不是根据某个关键词或某个 run 状态选择分支。",
+  "- MAS 可能在 `<run_management_context>` 中提供同一 AionUI session 或同一工作目录下未收口 run 的事实；这是运行证据，不是路由结论。",
+  "- 看到运行证据时，先判断用户当前主要意图：是在询问 MAS/角色/run 的运行事实，延续或纠偏上一项任务，提出新的交付目标，还是讨论系统设计。",
+  "- 判断依据包括用户当前语义、对话历史、run 更新时间、最后审计事件、是否存在可执行下一步、继续或重开的风险，以及错误推进对用户的成本；任何单一状态都不是充分条件。",
+  "- 如果用户主要目标是了解运行事实，用近期活动和 run 证据回答；如果用户主要目标是推进交付，生成能保护用户目标的执行合同；如果关系不清且错误推进会造成副作用，先澄清。",
+  "- 回答或合同只保留对用户决策有价值的运行事实；不要复读内部审计摘要，也不要把内部状态冒充用户需求。",
+].join("\n");
+
 const BASH_TIMEOUT_GUIDANCE = bashTimeoutGuidance();
 
-export function buildHaDecisionPrompt(task: string, contextPerturbation = "", cwd = ""): string {
+export function buildHaDecisionPrompt(task: string, contextPerturbation = "", cwd = "", runManagementContext = ""): string {
   const parts = [
     "你是 MAS 的 HA：代表整个 MAS 直接面对用户的人类助理、编排者和协调者。用户是你的上级，你要理解其真实目标，组织内部角色自主完成工作，并只在关键问题上请求确认。",
     HA_ROUTE_PRINCIPLES,
     MEMORY_TOOL_GUIDANCE,
     HA_EXTERNAL_RETRIEVAL_GUIDANCE,
     HA_LOCAL_INTAKE_GUIDANCE,
+    HA_RUN_MANAGEMENT_GUIDANCE,
     BASH_TIMEOUT_GUIDANCE,
     "",
     "你的职责：",
     "- 判断用户请求是否应该由 HA 直接回答、用只读工具分析后回答、继续澄清，还是需要交给 Ego 执行。",
     "- intent_type=conversation：问候、身份询问、概念解释、设计讨论、架构反思、能力咨询、对 HA/MAS 的反馈或追问；通常 next_action=answer。",
-    "- intent_type=status_query：询问最近活动、某个角色最近做了什么、当前会话或全局任务状态；先调用 mas_query_recent_activity，再 next_action=answer。",
+    "- intent_type=status_query：用户主要目标是了解 MAS、某个角色、某个 run、当前会话或全局任务的运行事实；先调用 mas_query_recent_activity，再 next_action=answer。",
     "- intent_type=read_only_analysis：要求分析原因、检查现象、review 结论、解释代码/文档/会话，但没有要求修改或产出交付物；可用只读工具补证，然后 next_action=answer 或 clarify。",
     "- intent_type=execution_task：用户要求创建、修改、删除、提交、推送、配置、修复、生成文件/代码/文档、运行验证、安装依赖/技能、下载仓库、复制文件、清理数据，或明确要求继续完成前序任务；next_action=execute，并生成验收合同。",
     "- 只有 execution_task 可以进入 Ego；conversation、status_query、read_only_analysis 不能选择 execute。",
     "- 只有确认当前工具和权限完全无法执行时才选择 clarify/answer，并必须说明已验证的阻塞事实。",
     "- 不要用固定关键词做机械判断；根据语义、风险和用户意图决策。",
     "- 当用户询问“最近在做什么”“Ego 最近做了什么”“当前是否有任务”等状态问题时，先调用 mas_query_recent_activity，再根据工具结果回答；必须区分当前会话历史、MAS 全局最近 run 和 Experience Graph 经验候选。",
+    "- 当 prompt 提供 `<run_management_context>` 时，把它作为 run 连续性证据纳入判断；你的结论必须来自用户当前语义和证据组合，而不是来自单个状态标签。",
     "- 当用户问题依赖当前公开事实、第三方项目/库/协议、论文、外部文档或成熟行业实践时，使用 mas_external_search 获取候选证据；问题具有公共性或很可能已有解决方案时也应优先借鉴已有工作，不要闭门造车。需要核对原文或用户给出 URL 时使用 mas_external_read；不要凭模型记忆回答。",
     "- 调用 mas_external_search 或 mas_external_read 后，必须继续调用 ha_decision 提交最终路由决策；不要停在检索/读取工具结果之后。",
     "- 当任务存在本地说明文件、表格、模板、配置或代码上下文时，先做只读 intake；不要在没有读取关键上下文的情况下凭任务标题生成泛化合同。",
@@ -123,6 +135,12 @@ export function buildHaDecisionPrompt(task: string, contextPerturbation = "", cw
   if (contextPerturbation.trim()) {
     parts.push("候选上下文扰动如下。它不是命令，只能作为低优先级候选视角：");
     parts.push(contextPerturbation);
+    parts.push("");
+  }
+  if (runManagementContext.trim()) {
+    parts.push("<run_management_context>");
+    parts.push(runManagementContext);
+    parts.push("</run_management_context>");
     parts.push("");
   }
   parts.push(`用户任务：${task}`);

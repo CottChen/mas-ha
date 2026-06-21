@@ -19,8 +19,8 @@ export interface RecentActivitySummary {
   rendered: string;
 }
 
-export interface StalledRunDiagnosis {
-  hasStalledRun: boolean;
+export interface RunManagementContext {
+  hasOpenRuns: boolean;
   rendered: string;
 }
 
@@ -46,11 +46,6 @@ export function buildRecentActivitySummary(store: MasStore, input: { sessionId?:
   };
 }
 
-export function isRunStatusQuestion(prompt: string): boolean {
-  const text = prompt.toLowerCase();
-  return /卡住|为什么.*停|怎么.*停|当前.*任务|现在.*任务|最近.*做|ego.*(卡|停|执行|状态)|superego.*(失败|状态|评审)|run.*(running|stuck|status)/i.test(text);
-}
-
 export function isRoleHealthCheckQuestion(prompt: string): boolean {
   const text = prompt.toLowerCase();
   const asksToCheck = ["测试", "验证", "检查", "probe", "dry-run", "dry run", "health", "smoke"].some((item) => text.includes(item));
@@ -60,10 +55,10 @@ export function isRoleHealthCheckQuestion(prompt: string): boolean {
   return asksToCheck && mentionsEgo && mentionsSuperego && asksHealth;
 }
 
-export function buildStalledRunDiagnosis(
+export function buildRunManagementContext(
   store: MasStore,
   input: { currentRunId: string; sessionId?: string; cwd: string; limit?: number },
-): StalledRunDiagnosis {
+): RunManagementContext {
   const limit = input.limit ?? 20;
   const runs = (store.listRuns(Math.max(limit, 20)) as StoredRunRow[]).filter((run) => run.run_id && run.run_id !== input.currentRunId);
   const normalizedCwd = normalizePath(input.cwd);
@@ -73,19 +68,25 @@ export function buildStalledRunDiagnosis(
     return normalizePath(run.cwd) === normalizedCwd;
   });
   if (candidates.length === 0) {
-    return { hasStalledRun: false, rendered: "" };
+    return { hasOpenRuns: false, rendered: "" };
   }
-  const lines = ["检测到同一会话或工作目录存在未收口的 running run，优先按状态诊断处理："];
+  const lines = [
+    "MAS run 管理上下文（运行证据，不是路由结论）：",
+    "- 检测到同一会话或工作目录存在未收口 running run 候选。",
+    "- 这些事实只用于帮助 HA 判断用户目标在时间中的连续性：当前请求可能是在询问运行事实，也可能是在延续、纠偏或开启新任务。",
+    "- running 状态本身不代表应回答、继续、重开或停止；需要结合用户语义、最后事件、更新时间和可执行下一步判断。",
+  ];
   for (const run of candidates.slice(0, 3)) {
     const agentRuns = store.listAgentRuns(run.run_id);
     const approvals = store.listApprovals(run.run_id);
     const audits = store.listAuditLog(run.run_id, 500);
     const lastAudit = audits.at(-1);
     const lastApproval = approvals.at(-1);
+    const idle = formatIdleAge(run.updated_at);
     lines.push(`- run=${run.run_id} status=${run.status} prompt=${run.prompt.replace(/\s+/g, " ").slice(0, 140)}`);
-    lines.push(`  created=${run.created_at} updated=${run.updated_at}`);
+    lines.push(`  created=${run.created_at} updated=${run.updated_at}${idle ? ` idle=${idle}` : ""}`);
     if (agentRuns.length) {
-      lines.push(`  roles=${summarizeAgentRuns(agentRuns).join(" | ")}`);
+      lines.push(`  roles=${summarizeAgentRuns(agentRuns, { limit: 4, summaryChars: 120 }).join(" | ")}`);
     } else {
       lines.push("  roles=尚无 HA/Ego/Superego agent_run 记录");
     }
@@ -96,7 +97,7 @@ export function buildStalledRunDiagnosis(
       lines.push(`  lastApproval=${lastApproval.createdAt} ${lastApproval.toolName} decision=${lastApproval.decision} ${summarizeUnknown(lastApproval.rawInput)}`);
     }
   }
-  return { hasStalledRun: true, rendered: lines.join("\n") };
+  return { hasOpenRuns: true, rendered: lines.join("\n") };
 }
 
 function summarizeRun(store: MasStore, run: StoredRunRow, sessionId?: string): {
@@ -120,8 +121,10 @@ function summarizeRun(store: MasStore, run: StoredRunRow, sessionId?: string): {
   };
 }
 
-function summarizeAgentRuns(agentRuns: AgentRunRecord[]): string[] {
-  return agentRuns.slice(-6).map((agentRun) => {
+function summarizeAgentRuns(agentRuns: AgentRunRecord[], options: { limit?: number; summaryChars?: number } = {}): string[] {
+  const limit = options.limit ?? 6;
+  const summaryChars = options.summaryChars ?? 120;
+  return agentRuns.slice(-limit).map((agentRun) => {
     const output = asRecord(agentRun.output);
     const result = asRecord(output.result);
     const decision = asRecord(output.decision);
@@ -131,10 +134,21 @@ function summarizeAgentRuns(agentRuns: AgentRunRecord[]): string[] {
       stringValue(result.summary) ??
       stringValue(decision.rationale) ??
       stringValue(critique.summary) ??
-      stringValue(output.text)?.replace(/\s+/g, " ").slice(0, 120) ??
+      stringValue(output.text)?.replace(/\s+/g, " ").slice(0, summaryChars) ??
       "";
     return `${agentRun.role}[${agentRun.status}]${intent ? `[${intent}]` : ""}${summary ? `: ${summary}` : ""}`;
   });
+}
+
+function formatIdleAge(updatedAt: string): string | undefined {
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return undefined;
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function renderRecentActivity(

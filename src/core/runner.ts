@@ -14,7 +14,7 @@ import type {
 } from "../types.js";
 import { classifyAgentBackendError, createPiSession } from "../pi/pi-sdk.js";
 import { buildAuditPacket, createBoundarySnapshot, enforceAuditGate } from "./audit.js";
-import { buildRecentActivitySummary, buildStalledRunDiagnosis, isRoleHealthCheckQuestion, isRunStatusQuestion } from "./activity.js";
+import { buildRecentActivitySummary, buildRunManagementContext, isRoleHealthCheckQuestion } from "./activity.js";
 import { AutonomyLoop } from "./autonomy.js";
 import { ContextPerturbationController } from "./context-perturbation.js";
 import { retrieveMemoryArtifacts } from "./memory.js";
@@ -54,6 +54,7 @@ export class MasRunner {
     const contextInjection = summarizeContextInjection(options);
     const task = buildTaskWithConversation(prompt, options.conversationHistory, options.conversationSummary, options.availableSkills);
     this.store.createRun({ runId, sessionId, cwd: options.cwd, prompt });
+    options.onRunStarted?.(runId);
     this.store.addEvent({
       runId,
       sessionId,
@@ -522,6 +523,19 @@ export class MasRunner {
       return { runId, result };
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
+      if (options.signal?.aborted || err.message === "MAS run 已取消") {
+        this.store.updateRun(runId, "cancelled", { message: err.message, stack: err.stack });
+        this.store.audit({ runId, actor: "system", action: "run_cancelled", payload: { message: err.message } });
+        this.store.addEvent({
+          runId,
+          sessionId,
+          source: "mas",
+          type: "mas.run.cancelled",
+          actor: "system",
+          payload: { message: err.message, stack: err.stack },
+        });
+        throw err;
+      }
       this.store.updateRun(runId, "failed", { message: err.message, stack: err.stack });
       if (egoResult || critique) {
         this.recordAutonomyClosure({
@@ -829,39 +843,14 @@ export class MasRunner {
     throwIfAborted(options.signal);
     this.store.audit({ runId, actor: "ha", action: "route_started", payload: { orchestrationMode: mode.id } });
     emitStage(sink, "HA 路由开始。");
-    const stalledRunDiagnosis = isRunStatusQuestion(prompt)
-      ? buildStalledRunDiagnosis(this.store, { currentRunId: runId, sessionId, cwd: options.cwd })
-      : undefined;
-    if (stalledRunDiagnosis?.hasStalledRun) {
-      const recent = buildRecentActivitySummary(this.store, { sessionId, limit: 6, scope: "all", excludeRunId: runId });
-      const response = [
-        "我先按运行状态诊断，而不是重新生成执行合同。",
-        "",
-        stalledRunDiagnosis.rendered,
-        "",
-        recent.rendered,
-        "",
-        "结论：当前问题不是新任务缺少验收合同，而是已有 run 没有正常收口。应先看上面最后的 audit/approval 事件处理卡点，再决定是否重跑或清理旧 run。",
-      ].join("\n");
-      const decision: HaDecision = {
-        intent_type: "status_query",
-        next_action: "answer",
-        response,
-        acceptance_contract: "",
-        readonly_input_paths: [],
-        allowed_output_paths: [],
-        rationale: "用户询问运行状态，且同一会话或工作目录存在未收口 running run；优先返回本地审计诊断，避免重复进入 execute。",
-      };
-      this.store.addAgentRun({
+    const runManagementContext = buildRunManagementContext(this.store, { currentRunId: runId, sessionId, cwd: options.cwd });
+    if (runManagementContext.hasOpenRuns) {
+      this.store.audit({
         runId,
-        role: "ha",
-        iteration: 0,
-        status: "completed",
-        input: { prompt, task, contextInjection, orchestrationMode: mode.id, statusDiagnosis: true },
-        output: { decision, statusDiagnosis: stalledRunDiagnosis.rendered, recentActivity: recent.rendered, orchestrationMode: mode },
+        actor: "system",
+        action: "run_management_context_prepared",
+        payload: { rendered: runManagementContext.rendered },
       });
-      this.store.audit({ runId, actor: "ha", action: "route_decided", payload: decision });
-      return decision;
     }
     if (isRoleHealthCheckQuestion(prompt)) {
       const decision: HaDecision = {
@@ -944,7 +933,7 @@ export class MasRunner {
       });
       let reviewText: string;
       try {
-        reviewText = await ha.prompt(buildHaDecisionPrompt(task, this.perturbations.render(perturbation), options.cwd));
+        reviewText = await ha.prompt(buildHaDecisionPrompt(task, this.perturbations.render(perturbation), options.cwd, runManagementContext.rendered));
       } catch (error) {
         const diagnostic = classifyAgentBackendError(error);
         this.store.addAgentRun({
@@ -952,7 +941,7 @@ export class MasRunner {
           role: "ha",
           iteration: 0,
           status: "failed",
-          input: { prompt, task, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+          input: { prompt, task, contextInjection, runManagementContext, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
           output: { error: diagnostic, stage: "route" },
         });
         this.store.audit({ runId, actor: "ha", action: "route_prompt_failed", payload: { error: diagnostic } });
@@ -970,7 +959,7 @@ export class MasRunner {
           role: "ha",
           iteration: 0,
           status: "failed",
-          input: { prompt, task, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+          input: { prompt, task, contextInjection, runManagementContext, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
           output: { text: failedOutput, error: firstError.message, orchestrationMode: mode },
         });
         this.store.audit({ runId, actor: "ha", action: "route_parse_failed", payload: { message: firstError.message } });
@@ -984,7 +973,7 @@ export class MasRunner {
             role: "ha",
             iteration: 0,
             status: "failed",
-            input: { prompt, task, repair: true, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+            input: { prompt, task, repair: true, contextInjection, runManagementContext, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
             output: { error: diagnostic, stage: "route_repair" },
           });
           this.store.audit({ runId, actor: "ha", action: "route_repair_prompt_failed", payload: { error: diagnostic } });
@@ -1001,7 +990,7 @@ export class MasRunner {
             role: "ha",
             iteration: 0,
             status: "failed",
-            input: { prompt, task, repair: true, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+            input: { prompt, task, repair: true, contextInjection, runManagementContext, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
             output: { text: repairedOutput, error: err.message, orchestrationMode: mode },
           });
           this.store.audit({ runId, actor: "ha", action: "route_repair_failed", payload: { message: err.message } });
@@ -1021,7 +1010,7 @@ export class MasRunner {
         role: "ha",
         iteration: 0,
         status: "completed",
-        input: { prompt, task, contextInjection, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
+        input: { prompt, task, contextInjection, runManagementContext, perturbation: summarizePerturbation(perturbation), orchestrationMode: mode.id },
         output: { text: reviewText, decision, orchestrationMode: mode },
       });
       this.store.addEvent({

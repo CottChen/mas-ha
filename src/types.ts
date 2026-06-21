@@ -482,6 +482,7 @@ export interface MasRunOptions {
   goalId?: string;
   model?: string;
   signal?: AbortSignal;
+  onRunStarted?: (runId: string) => void;
   conversationHistory?: ConversationTurn[];
   conversationSummary?: string;
   availableSkills?: SkillSummary[];

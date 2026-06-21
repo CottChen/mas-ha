@@ -20,6 +20,8 @@ type SessionState = {
   skills: SkillSummary[];
   selectedModel?: string;
   abort?: AbortController;
+  activeRunId?: string;
+  activePromptPreview?: string;
 };
 
 export interface AcpServerOptions {
@@ -106,6 +108,8 @@ export function startAcpServer(options: AcpServerOptions): void {
     const sink = new AcpStreamSink(peer, sessionId);
     const abort = new AbortController();
     session.abort = abort;
+    session.activeRunId = undefined;
+    session.activePromptPreview = prompt.replace(/\s+/g, " ").slice(0, 240);
     session.context = store.getConversationContext(sessionId);
     store.addMessage({ sessionId, role: "user", content: prompt, metadata: { source: "acp" } });
 
@@ -115,6 +119,7 @@ export function startAcpServer(options: AcpServerOptions): void {
       const response = "已压缩当前 MAS 会话上下文；后续请求会携带压缩摘要和最近对话。";
       sink.text(response);
       store.addMessage({ sessionId, role: "assistant", content: response, metadata: { source: "mas", command: "compact" } });
+      clearActivePromptState(session, abort);
       return {
         stopReason: "end_turn",
         usage: {
@@ -143,6 +148,7 @@ export function startAcpServer(options: AcpServerOptions): void {
         content: commandResult.text,
         metadata: { source: "mas", command: goalCommand.name, ok: commandResult.ok },
       });
+      clearActivePromptState(session, abort);
       return {
         stopReason: "end_turn",
         usage: {
@@ -165,6 +171,7 @@ export function startAcpServer(options: AcpServerOptions): void {
 
     const activeGoal = store.listGoals({ cwd: session.cwd, statuses: ["active"], limit: 1 })[0];
     let result: { runId: string; result: string };
+    let activeRunId: string | undefined;
     try {
       result = await runner.run(
         prompt,
@@ -179,12 +186,22 @@ export function startAcpServer(options: AcpServerOptions): void {
           conversationHistory: session.context.turns,
           conversationSummary: session.context.summary,
           availableSkills: session.skills,
+          onRunStarted: (runId) => {
+            activeRunId = runId;
+            session.activeRunId = runId;
+          },
         },
         sink,
         sessionId,
       );
     } catch (error) {
       if (abort.signal.aborted || isAbortError(error)) {
+        store.audit({
+          runId: activeRunId ?? session.activeRunId ?? "system",
+          actor: "system",
+          action: "acp_prompt_cancelled",
+          payload: { sessionId, cwd: session.cwd, promptPreview: session.activePromptPreview },
+        });
         return {
           stopReason: "cancelled",
           usage: {
@@ -195,6 +212,8 @@ export function startAcpServer(options: AcpServerOptions): void {
         };
       }
       throw error;
+    } finally {
+      clearActivePromptState(session, abort, activeRunId);
     }
     store.addMessage({ sessionId, role: "assistant", content: result.result, metadata: { runId: result.runId, source: "mas" } });
     session.context = store.getConversationContext(sessionId);
@@ -211,6 +230,18 @@ export function startAcpServer(options: AcpServerOptions): void {
 
   peer.on("session/cancel", (params) => {
     const session = sessions.get(String(params?.sessionId ?? ""));
+    store.audit({
+      runId: session?.activeRunId ?? "system",
+      actor: "system",
+      action: "acp_session_cancel_requested",
+      payload: {
+        sessionId: String(params?.sessionId ?? ""),
+        cwd: session?.cwd,
+        activeRunId: session?.activeRunId,
+        hasAbortController: Boolean(session?.abort),
+        promptPreview: session?.activePromptPreview,
+      },
+    });
     session?.abort?.abort();
     return {};
   });
@@ -219,9 +250,15 @@ export function startAcpServer(options: AcpServerOptions): void {
     const sessionId = String(params?.sessionId ?? "");
     const session = sessions.get(sessionId);
     if (session) {
+      store.audit({
+        runId: session.activeRunId ?? "system",
+        actor: "system",
+        action: "acp_session_close_requested",
+        payload: { sessionId, cwd: session.cwd, activeRunId: session.activeRunId, hasAbortController: Boolean(session.abort), promptPreview: session.activePromptPreview },
+      });
       session.abort?.abort();
       sessions.delete(sessionId);
-      store.audit({ runId: "system", actor: "system", action: "acp_session_closed", payload: { sessionId, cwd: session.cwd } });
+      store.audit({ runId: session.activeRunId ?? "system", actor: "system", action: "acp_session_closed", payload: { sessionId, cwd: session.cwd, activeRunId: session.activeRunId } });
     }
     return {};
   });
@@ -278,6 +315,12 @@ export function startAcpServer(options: AcpServerOptions): void {
     store.audit({ runId: "system", actor: "system", action: "acp_session_rehydrated", payload: { sessionId, cwd: session.cwd, reason } });
     return session;
   }
+}
+
+function clearActivePromptState(session: SessionState, abort: AbortController, runId?: string): void {
+  if (session.abort === abort) session.abort = undefined;
+  if (!runId || session.activeRunId === runId) session.activeRunId = undefined;
+  session.activePromptPreview = undefined;
 }
 
 async function sessionResponse(session: SessionState): Promise<Record<string, unknown>> {

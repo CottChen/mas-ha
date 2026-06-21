@@ -280,7 +280,7 @@ async function autonomyStorageSmoke(): Promise<void> {
   const { buildAuditPacket, createBoundarySnapshot } = await import("../src/core/audit.js");
   const { AutonomyLoop } = await import("../src/core/autonomy.js");
   const { ContextPerturbationController } = await import("../src/core/context-perturbation.js");
-  const { buildRecentActivitySummary } = await import("../src/core/activity.js");
+  const { buildRecentActivitySummary, buildRunManagementContext } = await import("../src/core/activity.js");
   const { buildEgoPrompt, buildHaDecisionPrompt, buildHaFinalReviewPrompt, buildSuperegoPrompt } = await import("../src/core/prompts.js");
   const { enforceHaFinalReviewGate, formatNeedsAttentionResult, routeEgoAttentionToCritique, routeSuperegoReviewForOrchestration } = await import("../src/core/runner.js");
   const { parseCritique } = await import("../src/core/prompts.js");
@@ -334,6 +334,14 @@ async function autonomyStorageSmoke(): Promise<void> {
     const recentActivity = buildRecentActivitySummary(store, { sessionId: "e2e-session", limit: 5 });
     assert(recentActivity.rendered.includes("Ego 最近完成了 E2E"), "近期活动摘要应包含 Ego 最近执行事实");
     assert(recentActivity.recentRoles.includes("ego"), "近期活动摘要应记录最近出现过 Ego");
+    store.createRun({ runId: "e2e-open-run", sessionId: "e2e-session", cwd: autonomyWorkspace, prompt: "E2E historical running run" });
+    const runManagementContext = buildRunManagementContext(store, { currentRunId: "e2e-current-run", sessionId: "e2e-session", cwd: autonomyWorkspace });
+    assert(runManagementContext.hasOpenRuns, "run 管理上下文应识别同会话未收口 running run");
+    assert(runManagementContext.rendered.includes("不是路由结论"), "run 管理上下文必须声明自己不是路由结论");
+    assert(
+      buildHaDecisionPrompt("继续完成刚才任务，不要停", "", autonomyWorkspace, runManagementContext.rendered).includes("<run_management_context>"),
+      "HA prompt 应支持注入 run 管理上下文，而不是框架正则抢跑",
+    );
     store.createRun({ runId: "e2e-current-run", sessionId: "e2e-session", cwd: autonomyWorkspace, prompt: "E2E current run" });
     const previousEgoRuns = store.listSessionAgentRuns({ sessionId: "e2e-session", role: "ego", beforeRunId: "e2e-current-run", limit: 3 });
     assert(previousEgoRuns.some((run) => run.runId === "e2e-recent-activity-run"), "应能按 AionUI session 查询 Ego 之前的执行上下文");

@@ -134,15 +134,16 @@ Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执
 
 1. AionUI 通过 ACP 调用 MAS。
 2. MAS 恢复 `sessionId` 对应的会话摘要、最近消息、技能摘要和运行配置。
-3. HA 先生成结构化路由意图 `intent_type`：`conversation`、`status_query`、`read_only_analysis` 或 `execution_task`。对话、状态查询和只读分析由 HA 直接处理；只有 `execution_task` 可以进入 Ego。
-4. 对 `execution_task`，HA 进入执行前可做本地只读 intake，读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文，并生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。
-5. MAS 生成边界 baseline snapshot。
-6. Ego 按验收合同执行任务，提交 `ego_result`。
-7. MAS 将完整 AuditPacket 持久化为 run artifact，并向 Superego 注入摘要、索引和关键风险。
-8. Superego 基于 Ego 结果、AuditPacket artifact 摘要和按需读取的审计 section 做系统审计评审。
-9. HA 基于用户意图、Ego 结果、Superego 结论、AuditPacket artifact、只读抽样和必要外部检索做最终验收。
-10. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
-11. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
+3. MAS 为 HA 准备中性的 run 管理上下文，例如同一 session/工作目录下未收口的 running run、最后审计事件和最近角色摘要。该上下文只是事实证据，不是路由结论。
+4. HA 先生成结构化路由意图 `intent_type`：`conversation`、`status_query`、`read_only_analysis` 或 `execution_task`。对话、状态查询和只读分析由 HA 直接处理；只有 `execution_task` 可以进入 Ego。
+5. 对 `execution_task`，HA 进入执行前可做本地只读 intake，读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文，并生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。
+6. MAS 生成边界 baseline snapshot。
+7. Ego 按验收合同执行任务，提交 `ego_result`。
+8. MAS 将完整 AuditPacket 持久化为 run artifact，并向 Superego 注入摘要、索引和关键风险。
+9. Superego 基于 Ego 结果、AuditPacket artifact 摘要和按需读取的审计 section 做系统审计评审。
+10. HA 基于用户意图、Ego 结果、Superego 结论、AuditPacket artifact、只读抽样和必要外部检索做最终验收。
+11. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
+12. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
 
 Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结束为人工介入，而是把它转成内部返工/验收信号。Superego 如果返回 `escalate`，MAS 也不会直接结束，而是先交给 HA 终验裁决；只有 HA 确认需要用户补充需求、确认取舍、提供外部凭据/权限，或系统轮次上限耗尽且无自动推进路径时，run 才进入用户可见的 `needs_attention`。
 
@@ -227,6 +228,8 @@ MAS 是 AionUI 会话一致性的责任方。AionUI 的 `sessionId`、MAS 的 `r
 - Pi session：HA、Ego 或 Superego 在某一轮中的执行实例。
 
 SQLite 当前保存消息、摘要、运行记录、agent_run、approval、audit、events、Experience Graph、低熵信号、候选和自主调度任务。Pi session 使用内存型执行实例，长期会话语义由 MAS 持久化和显式上下文注入保证。AionUI 可见的中间工具流和 agent 思考不会自动成为下一轮 MAS agent 的上下文；需要跨 run 使用的事实必须通过 MAS 存储、AuditPacket artifact、agent_run 结构化输出、会话摘要或显式查询工具进入上下文。
+
+run 管理属于 HA 语义判断和 ACP 生命周期审计的交界面。框架负责记录 `session/prompt` 绑定的 active `runId`、`session/cancel`、`session/close` 和 run 取消结果，并向 HA 注入中性的 `<run_management_context>`；框架不应通过宽泛正则在 HA 之前判断用户是在询问运行事实还是要求继续交付。HA 需要形成 run 连续性判断：当前请求是在了解 MAS/角色/run 的运行事实，延续或纠偏上一项任务，提出新的交付目标，还是讨论系统设计。运行证据只改变 HA 的判断依据和风险模型，不能单独决定路由。
 
 ## 当前边界
 
