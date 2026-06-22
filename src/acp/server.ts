@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { JsonRpcPeer } from "./json-rpc.js";
 import { AcpStreamSink } from "./acp-sink.js";
 import { GoalCommandRouter } from "../core/goal-command-router.js";
+import { cleanIncomingUserPrompt } from "../core/conversation-context.js";
 import { normalizeOrchestrationMode, orchestrationModeList } from "../core/orchestration.js";
 import { ReflectionScheduler } from "../core/reflection-scheduler.js";
 import { MasRunner } from "../core/runner.js";
@@ -104,7 +105,7 @@ export function startAcpServer(options: AcpServerOptions): void {
   peer.on("session/prompt", async (params) => {
     const sessionId = String(params?.sessionId ?? "");
     const session = await getOrHydrateSession(sessionId, params, "prompt");
-    const prompt = extractPrompt(params?.prompt);
+    const prompt = cleanIncomingUserPrompt(extractPrompt(params?.prompt));
     const sink = new AcpStreamSink(peer, sessionId);
     const abort = new AbortController();
     session.abort = abort;
@@ -494,7 +495,6 @@ function queueSessionUpdates(
       queueConfigUpdate(peer, { sessionId, cwd, approvalMode, orchestrationMode, context, skills, selectedModel });
       queueAvailableCommands(peer, sessionId, skills);
       await queueRoleModelSummary(peer, sessionId, cwd, selectedModel);
-      replayHistory(peer, sessionId, context);
     })();
   }, 0);
 }
@@ -580,27 +580,6 @@ function queueAvailableCommands(peer: JsonRpcPeer, sessionId: string, skills: Sk
       ],
     },
   });
-}
-
-function replayHistory(peer: JsonRpcPeer, sessionId: string, context: ConversationContext): void {
-  if (context.summary.trim()) {
-    peer.notify("session/update", {
-      sessionId,
-      update: {
-        sessionUpdate: "agent_thought_chunk",
-        content: { type: "text", text: `已恢复压缩上下文摘要。\n${context.summary}` },
-      },
-    });
-  }
-  for (const turn of context.turns) {
-    peer.notify("session/update", {
-      sessionId,
-      update: {
-        sessionUpdate: turn.role === "user" ? "user_message_chunk" : "agent_message_chunk",
-        content: { type: "text", text: turn.content },
-      },
-    });
-  }
 }
 
 function isAbortError(error: unknown): boolean {

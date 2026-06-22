@@ -16,6 +16,7 @@ import { classifyAgentBackendError, createPiSession } from "../pi/pi-sdk.js";
 import { buildAuditPacket, createBoundarySnapshot, enforceAuditGate } from "./audit.js";
 import { buildRecentActivitySummary, buildRunManagementContext, isRoleHealthCheckQuestion } from "./activity.js";
 import { AutonomyLoop } from "./autonomy.js";
+import { sanitizeConversationTurnForPrompt } from "./conversation-context.js";
 import { ContextPerturbationController } from "./context-perturbation.js";
 import { retrieveMemoryArtifacts } from "./memory.js";
 import { ORCHESTRATION_MODES } from "./orchestration.js";
@@ -1645,26 +1646,15 @@ function trimHistory(history: ConversationTurn[]): ConversationTurn[] {
   const selected: ConversationTurn[] = [];
   let total = 0;
   for (const turn of history.slice(-maxTurns).reverse()) {
-    const content = cleanConversationTurnContent(turn.content);
-    if (!content) continue;
+    const sanitized = sanitizeConversationTurnForPrompt(turn);
+    if (!sanitized) continue;
+    const content = sanitized.content;
     const nextTotal = total + content.length;
     if (nextTotal > maxChars && selected.length > 0) break;
-    selected.push({ role: turn.role, content: content.slice(-maxChars) });
+    selected.push({ role: sanitized.role, content: content.slice(-maxChars) });
     total = Math.min(nextTotal, maxChars);
   }
   return selected.reverse();
-}
-
-function cleanConversationTurnContent(content: string): string {
-  let text = content.replace(/\r\n/g, "\n").trim();
-  const userRequestMarker = "[User Request]";
-  const markerIndex = text.lastIndexOf(userRequestMarker);
-  if (markerIndex >= 0) {
-    text = text.slice(markerIndex + userRequestMarker.length).trim();
-  } else if (text.includes("[Assistant Rules - You MUST follow these instructions]")) {
-    return "";
-  }
-  return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function summarizeContextInjection(options: MasRunOptions): {
