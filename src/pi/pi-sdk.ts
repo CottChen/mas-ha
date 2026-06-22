@@ -1365,7 +1365,9 @@ function haDecisionToolSpec(): StructuredOutputToolSpec<HaDecision> {
       next_action: Type.Union([Type.Literal("answer"), Type.Literal("execute"), Type.Literal("clarify")], {
         description: "下一步动作",
       }),
-      response: Type.String({ description: "answer/clarify 时给用户的中文回复；execute 时为空字符串" }),
+      response: Type.String({
+        description: "answer/clarify 时给用户的中文回复；execute 时可为空，也可填写 1-3 句面向用户的执行前说明",
+      }),
       acceptance_contract: Type.String({ description: "execute 时的验收合同；answer/clarify 时为空字符串" }),
       readonly_input_paths: Type.Array(Type.String({ description: "用户提供且不应被 Ego 修改的本地输入文件/目录绝对路径；没有则为空数组" }), {
         description: "只读输入边界",
