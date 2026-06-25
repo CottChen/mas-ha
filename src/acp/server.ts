@@ -504,7 +504,7 @@ async function queueRoleModelSummary(peer: JsonRpcPeer, sessionId: string, cwd: 
   peer.notify("session/update", {
     sessionId,
     update: {
-      sessionUpdate: "agent_thought_chunk",
+      sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: renderRoleModelSummary(summary, selectedModel) },
     },
   });
@@ -512,7 +512,7 @@ async function queueRoleModelSummary(peer: JsonRpcPeer, sessionId: string, cwd: 
 
 function renderRoleModelSummary(summary: PiBackendModelSummary, selectedModel?: string): string {
   const roleModels = summary.roleModels ?? {};
-  const lines = ["MAS 角色模型配置："];
+  const lines = ["MAS 会话开始：角色模型配置"];
   lines.push(`- Pi 默认模型：${summary.currentModelId ?? "未解析"}`);
   if (selectedModel) lines.push(`- AionUI 当前选择：${selectedModel}（仅作用于 HA，除非 MAS_HA_MODEL 显式覆盖）`);
   lines.push(formatRoleModelLine("HA", roleModels.ha));

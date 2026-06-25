@@ -40,6 +40,10 @@ function emitStage(sink: StreamSink, text: string): void {
   sink.text(`\n\n${text}\n`);
 }
 
+function emitContract(sink: StreamSink, title: string, contract: string): void {
+  sink.text(`\n\n${title}：\n\n\`\`\`markdown\n${contract.trim()}\n\`\`\`\n`);
+}
+
 const EGO_STRUCTURED_FAILURE_HA_THRESHOLD = 3;
 
 export class MasRunner {
@@ -114,7 +118,7 @@ export class MasRunner {
         return { runId, result };
       }
 
-      const contract = haDecision.acceptance_contract.trim() || buildAcceptanceContract(task);
+      let contract = haDecision.acceptance_contract.trim() || buildAcceptanceContract(task);
       const haExecutionNote = haDecision.response.trim();
       if (haExecutionNote) {
         emitStage(sink, `HA 执行前说明：${haExecutionNote}`);
@@ -128,13 +132,66 @@ export class MasRunner {
           payload: { response: haExecutionNote },
         });
       }
-      emitStage(sink, `HA 已创建验收合同。编排模式：${mode.name}。`);
-      const boundaryDeclarations = {
+      emitContract(sink, `HA 已创建验收合同。编排模式：${mode.name}`, contract);
+      let boundaryDeclarations = {
         readonlyInputPaths: haDecision.readonly_input_paths,
         allowedOutputPaths: haDecision.allowed_output_paths,
       };
-      const boundarySnapshot: BoundarySnapshot = createBoundarySnapshot({ cwd: options.cwd, task, contract, boundaryDeclarations });
+      let boundarySnapshot: BoundarySnapshot = createBoundarySnapshot({ cwd: options.cwd, task, contract, boundaryDeclarations });
       this.store.audit({ runId, actor: "system", action: "boundary_snapshot_baseline", payload: summarizeBoundarySnapshot(boundarySnapshot) });
+
+      const continueWithHaContract = (haFinalReview: CritiqueResult, iteration: number): boolean => {
+        if (!isHaPostAcceptContinuation(haFinalReview)) return false;
+        if (iteration >= options.maxIterations) {
+          haFinalReview.next_action = "escalate";
+          haFinalReview.blocking_issues = Math.max(haFinalReview.blocking_issues, 1);
+          haFinalReview.remainingUncertainty = Math.max(haFinalReview.remainingUncertainty ?? 0, 0.7);
+          haFinalReview.summary = `${haFinalReview.summary} 当前合同已通过且 HA 已产出下一轮合同，但本 run 已达到最大轮次，无法继续启动 Ego。`.trim();
+          haFinalReview.nextBestObservation =
+            haFinalReview.nextBestObservation?.trim() || "提高最大轮次后重跑，或由 HA 将下一轮合同作为新的执行任务启动。";
+          haFinalReview.critique_items = [
+            ...haFinalReview.critique_items,
+            {
+              category: "post_accept_continuation_budget_exhausted",
+              severity: "high",
+              suggestion: "HA 返回了 post-accept continuation，但 runner 已无剩余轮次执行下一合同；不能把未执行的下一阶段标记为完成。",
+            },
+          ];
+          this.store.audit({
+            runId,
+            actor: "system",
+            action: "post_accept_continuation_budget_exhausted",
+            payload: { iteration, maxIterations: options.maxIterations, nextContract: haFinalReview.next_acceptance_contract },
+          });
+          return false;
+        }
+        const nextContract = haFinalReview.next_acceptance_contract!.trim();
+        contract = nextContract;
+        boundaryDeclarations = {
+          readonlyInputPaths: haFinalReview.next_readonly_input_paths ?? boundaryDeclarations.readonlyInputPaths,
+          allowedOutputPaths: haFinalReview.next_allowed_output_paths ?? boundaryDeclarations.allowedOutputPaths,
+        };
+        boundarySnapshot = createBoundarySnapshot({ cwd: options.cwd, task, contract, boundaryDeclarations });
+        critique = undefined;
+        consecutiveEgoStructuredFailures = 0;
+        emitContract(sink, `HA 终验通过当前合同，并创建下一轮验收合同（Ego 第 ${iteration + 1} 轮将执行）`, contract);
+        this.store.audit({
+          runId,
+          actor: "ha",
+          action: "post_accept_continuation_contract_created",
+          payload: { iteration, contract, boundaryDeclarations },
+        });
+        this.store.addEvent({
+          runId,
+          sessionId,
+          source: "mas",
+          type: "mas.ha.continuation_contract.created",
+          actor: "ha",
+          payload: { iteration, acceptanceContract: contract, boundaryDeclarations },
+        });
+        this.store.audit({ runId, actor: "system", action: "boundary_snapshot_continuation", payload: summarizeBoundarySnapshot(boundarySnapshot) });
+        return true;
+      };
 
       for (let iteration = 1; iteration <= options.maxIterations; iteration++) {
         throwIfAborted(options.signal);
@@ -241,6 +298,7 @@ export class MasRunner {
           const { auditArtifact } = this.createAuditArtifact({ runId, iteration, cwd: options.cwd, egoResult, boundarySnapshot, task, contract, boundaryDeclarations });
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (continueWithHaContract(haFinalReview, iteration)) continue;
           if (haFinalReview.next_action === "escalate") {
             const result = formatNeedsAttentionResult({
               headline: "HA 终验未通过：需要人工介入。",
@@ -292,6 +350,7 @@ export class MasRunner {
           const { auditArtifact } = this.createAuditArtifact({ runId, iteration, cwd: options.cwd, egoResult, boundarySnapshot, task, contract, boundaryDeclarations });
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (continueWithHaContract(haFinalReview, iteration)) continue;
           if (haFinalReview.next_action === "escalate") {
             const result = formatNeedsAttentionResult({
               headline: "HA 终验未通过：需要人工介入。",
@@ -314,6 +373,7 @@ export class MasRunner {
         if (!mode.usesSuperego) {
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, undefined, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (continueWithHaContract(haFinalReview, iteration)) continue;
           if (haFinalReview.next_action === "accept" && haFinalReview.blocking_issues === 0) {
             const result = `HA 终验通过（${mode.name} 模式，未启用 Superego 评审）。\n\n${finalEgoOutput}`;
             this.store.updateRun(runId, "completed", { result, egoResult, haFinalReview, orchestrationMode: mode.id });
@@ -450,6 +510,7 @@ export class MasRunner {
           });
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (continueWithHaContract(haFinalReview, iteration)) continue;
           if (haFinalReview.next_action === "escalate") {
             const result = formatNeedsAttentionResult({
               headline: "HA 终验未通过：需要人工介入。",
@@ -475,6 +536,7 @@ export class MasRunner {
         if (critique.next_action === "accept" && critique.blocking_issues === 0) {
           const haFinalReview = await this.reviewFinalWithHa(task, prompt, contract, egoResult, critique, options, sink, runId, sessionId, iteration, contextInjection, auditArtifact);
           emitStage(sink, `HA 终验结论：${haFinalReview.summary || haFinalReview.next_action}`);
+          if (continueWithHaContract(haFinalReview, iteration)) continue;
           if (haFinalReview.next_action === "escalate") {
             const result = formatNeedsAttentionResult({
               headline: "HA 终验未通过：需要人工介入。",
@@ -781,7 +843,7 @@ export class MasRunner {
     iteration: number,
   ): Promise<CritiqueResult> {
     try {
-      return this.parseStructuredOutput("ha_final_review", rawOutput, ha, (text) => parseCritique(text, "HA 终验"), "HA 终验");
+      return this.parseStructuredOutput("ha_final_review", rawOutput, ha, (text) => parseCritique(text, "HA 终验", { allowContinue: true }), "HA 终验");
     } catch (error) {
       const firstError = error instanceof Error ? error : new Error(String(error));
       this.store.addAgentRun({
@@ -796,7 +858,7 @@ export class MasRunner {
       ha.clearStructuredOutput("ha_final_review");
       const repairText = await ha.prompt(buildHaFinalReviewRepairPrompt(rawOutput, firstError.message));
       try {
-        return this.parseStructuredOutput("ha_final_review", repairText, ha, (text) => parseCritique(text, "HA 终验"), "HA 终验");
+        return this.parseStructuredOutput("ha_final_review", repairText, ha, (text) => parseCritique(text, "HA 终验", { allowContinue: true }), "HA 终验");
       } catch (repairError) {
         const err = repairError instanceof Error ? repairError : new Error(String(repairError));
         this.store.addAgentRun({
@@ -1325,7 +1387,7 @@ function formatHaFrameworkFailureText(stage: string, diagnostic: AgentBackendDia
 }
 
 export function enforceHaFinalReviewGate(review: CritiqueResult, context?: { egoResult?: EgoResult }): CritiqueResult {
-  if (review.next_action === "accept" && context?.egoResult && context.egoResult.status !== "completed") {
+  if ((review.next_action === "accept" || review.next_action === "continue") && context?.egoResult && context.egoResult.status !== "completed") {
     return {
       ...review,
       blocking_issues: Math.max(review.blocking_issues, 1),
@@ -1340,12 +1402,12 @@ export function enforceHaFinalReviewGate(review: CritiqueResult, context?: { ego
         {
           category: "ha_final_review_gate",
           severity: "high",
-          suggestion: "Ego/Superego 的 needs_attention 或 blocked 只是内部状态信号；HA 必须从用户视角判断应返工还是确实需要用户介入，不能直接 accept 未完成结果。",
+          suggestion: "Ego/Superego 的 needs_attention 或 blocked 只是内部状态信号；HA 必须从用户视角判断应返工还是确实需要用户介入，不能直接 accept 或 continue 未完成结果。",
         },
       ],
     };
   }
-  if (review.next_action !== "accept") return review;
+  if (review.next_action !== "accept" && review.next_action !== "continue") return review;
   const evidenceQuality = review.evidenceQuality ?? 0;
   const hasSummary = review.summary.trim().length > 0;
   if (review.quality_score > 0 && evidenceQuality > 0 && hasSummary) return review;
@@ -1353,7 +1415,7 @@ export function enforceHaFinalReviewGate(review: CritiqueResult, context?: { ego
     ...review,
     blocking_issues: Math.max(review.blocking_issues, 1),
     quality_score: Math.min(review.quality_score, 0.2),
-    summary: hasSummary ? review.summary : "HA 终验未提供有效摘要或独立验收证据，不能接受空壳 accept。",
+    summary: hasSummary ? review.summary : "HA 终验未提供有效摘要或独立验收证据，不能接受空壳 accept/continue。",
     next_action: "escalate",
     evidenceQuality,
     remainingUncertainty: Math.max(review.remainingUncertainty ?? 0, 0.8),
@@ -1363,7 +1425,7 @@ export function enforceHaFinalReviewGate(review: CritiqueResult, context?: { ego
       {
         category: "ha_final_review_gate",
         severity: "high",
-        suggestion: "HA 终验 accept 必须包含非空摘要、正向质量评分和正向证据质量；空壳 accept 应升级人工或返工。",
+        suggestion: "HA 终验 accept/continue 必须包含非空摘要、正向质量评分和正向证据质量；空壳通过应升级人工或返工。",
       },
     ],
   };
@@ -1500,9 +1562,14 @@ function formatCritiqueForUser(title: string, critique: CritiqueResult): string 
 
 function formatAction(action: CritiqueResult["next_action"], title = ""): string {
   if (action === "accept") return "通过";
+  if (action === "continue") return "通过并继续下一合同";
   if (action === "revise") return "需要返工";
   if (!title.startsWith("HA")) return "升级给 HA 裁决";
   return "需要人工介入";
+}
+
+function isHaPostAcceptContinuation(review: CritiqueResult): boolean {
+  return review.next_action === "continue" && review.blocking_issues === 0 && Boolean(review.next_acceptance_contract?.trim());
 }
 
 function formatScore(score: number | undefined): string {

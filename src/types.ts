@@ -519,11 +519,14 @@ export interface CritiqueResult {
   blocking_issues: number;
   quality_score: number;
   summary: string;
-  next_action: "accept" | "revise" | "escalate";
+  next_action: "accept" | "continue" | "revise" | "escalate";
   entropyDelta?: "increased" | "decreased" | "unchanged" | "unknown";
   evidenceQuality?: number;
   remainingUncertainty?: number;
   nextBestObservation?: string;
+  next_acceptance_contract?: string;
+  next_readonly_input_paths?: string[];
+  next_allowed_output_paths?: string[];
   reflectionIntent?: ReflectionIntent;
   critique_items: Array<{
     category: string;

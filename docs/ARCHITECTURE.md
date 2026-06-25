@@ -136,16 +136,20 @@ Ego 和 Superego 也对应单个 LLM agent 的两个运行面：Ego 是现实执
 2. MAS 恢复 `sessionId` 对应的会话摘要、最近消息、技能摘要和运行配置。
 3. MAS 为 HA 准备中性的 run 管理上下文，例如同一 session/工作目录下未收口的 running run、最后审计事件和最近角色摘要。该上下文只是事实证据，不是路由结论。
 4. HA 先生成结构化路由意图 `intent_type`：`conversation`、`status_query`、`read_only_analysis` 或 `execution_task`。对话、状态查询和只读分析由 HA 直接处理；只有 `execution_task` 可以进入 Ego。
-5. 对 `execution_task`，HA 进入执行前可做本地只读 intake，读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文，并生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。
+5. 对 `execution_task`，HA 进入执行前可做本地只读 intake，读取用户明确给出的任务说明、需求文档、目录结构、表头、配置或代码上下文，并生成验收合同，包含用户目标、边界、关键口径、证据和验收建议。HA 初始合同和后续 `continue` 合同都必须通过 AionUI 可见消息展示，不能只留在 `agent_runs` JSON 中。
 6. MAS 生成边界 baseline snapshot。
 7. Ego 按验收合同执行任务，提交 `ego_result`。
 8. MAS 将完整 AuditPacket 持久化为 run artifact，并向 Superego 注入摘要、索引和关键风险。
 9. Superego 基于 Ego 结果、AuditPacket artifact 摘要和按需读取的审计 section 做系统审计评审。
 10. HA 基于用户意图、Ego 结果、Superego 结论、AuditPacket artifact、只读抽样和必要外部检索做最终验收。
+    - `accept`：当前合同通过，run 可以结束。
+    - `continue`：当前合同通过，但用户已授权连续推进且下一阶段足够明确；HA 在 `ha_final_review` 中产出下一轮 `next_acceptance_contract` 和边界数组，MAS 将合同显示到 AionUI 并继续启动 Ego 执行。
+    - `revise`：仍可自动返工，继续交给 Ego。
+    - `escalate`：只有 HA 判断确实需要用户介入时才面向用户结束。
 11. MAS 将 run、agent_run、approval、audit、events、Experience Graph 和低熵信号写入 SQLite。
 12. Autonomy daemon 后续处理 reflection、dream、prune、consolidation 和 goal_continuation。
 
-Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结束为人工介入，而是把它转成内部返工/验收信号。Superego 如果返回 `escalate`，MAS 也不会直接结束，而是先交给 HA 终验裁决；只有 HA 确认需要用户补充需求、确认取舍、提供外部凭据/权限，或系统轮次上限耗尽且无自动推进路径时，run 才进入用户可见的 `needs_attention`。
+Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结束为人工介入，而是把它转成内部返工/验收信号。Superego 如果返回 `escalate`，MAS 也不会直接结束，而是先交给 HA 终验裁决；只有 HA 确认需要用户补充需求、确认取舍、提供外部凭据/权限，或系统轮次上限耗尽且无自动推进路径时，run 才进入用户可见的 `needs_attention`。当 HA 终验返回 `continue` 时，当前合同被视为已通过，但 run 不结束；MAS 用 HA 提供的下一轮合同重建边界 snapshot 并继续执行。
 
 Ego 未提交 `ego_result` 且没有可解析 JSON 时，MAS 将其识别为执行层结构化输出失败，而不是可供 Superego 审计的业务结果。该类失败默认直接打回 Ego；连续 3 轮仍失败时，MAS 跳过 Superego 并交给 HA 判断是否需要人工介入或恢复执行后端。
 
@@ -172,7 +176,7 @@ MAS 当前采用角色异质工具分工：
 - Ego 未配置 `MAS_EGO_MODEL` 时直接使用 Pi 默认模型。
 - Superego 未配置 `MAS_SUPEREGO_MODEL` 时直接使用 Pi 默认模型，不探测其他模型。
 - 显式配置的角色模型不可用时，MAS 回退 Pi 默认模型，并在 ACP metadata 和 MAS event 中记录 warning。
-- `session/new` 和 `session/load` 会向 AionUI 展示一次 `MAS 角色模型配置`，用于让用户看到 HA / Ego / Superego 的实际模型分工；该展示事件不写入会话历史，也不进入角色 Pi session 上下文。
+- `session/new` 和 `session/load` 会向 AionUI 以普通可见消息展示一次 `MAS 会话开始：角色模型配置`，用于让用户看到 HA / Ego / Superego 的实际模型分工；该展示事件不写入会话历史，也不进入角色 Pi session 上下文。
 
 ## 记忆与外部证据
 

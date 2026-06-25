@@ -205,13 +205,16 @@ export function buildHaFinalReviewPrompt(
     "- 调用 mas_external_search 或 mas_external_read 后，必须继续调用 ha_final_review 提交最终验收结论；不要停在检索/读取工具结果之后。",
     "- 如果用户意图未满足、证据不足、Superego 与 Ego 互相矛盾、或存在需要用户确认的风险，必须 revise 或 escalate；仍有清晰自动下一步时优先 revise。",
     "- 不能提交空摘要、quality_score=0 或 evidenceQuality=0 的 accept；证据不足但仍可继续补证时必须 revise，只有确实需要用户决策或系统预算耗尽时才 escalate。",
+    "- 如果当前合同已经通过、但用户授权了阶段连续推进，且下一阶段目标、边界和验收证据已经足够明确，不要结束 run；使用 next_action=continue，并填写 next_acceptance_contract、next_readonly_input_paths、next_allowed_output_paths，让 runner 继续启动 Ego 执行下一轮合同。",
+    "- continue 是 post-accept continuation：它等价于“当前合同通过 + HA 主动创建下一轮合同”。只有 blocking_issues=0 且当前合同已验收通过时才能使用；如果下一阶段需要用户取舍或信息不足，应 escalate 或 clarify，而不是 continue。",
     "",
     "必须调用 ha_final_review 工具提交结构化终验结论，并把它作为最终动作。",
     "不要用普通文本、Markdown 代码块或手写 JSON 作为最终结果。",
     "ha_final_review 参数格式：",
-    '{"blocking_issues":0,"quality_score":0.0,"summary":"","next_action":"accept","entropyDelta":"unknown","evidenceQuality":0.0,"remainingUncertainty":0.0,"nextBestObservation":"","critique_items":[{"category":"","severity":"low","suggestion":""}]}',
-    "next_action 只能是 accept、revise 或 escalate。",
-    "如果存在阻塞问题，next_action 必须是 revise 或 escalate，不能是 accept。",
+    '{"blocking_issues":0,"quality_score":0.0,"summary":"","next_action":"accept","entropyDelta":"unknown","evidenceQuality":0.0,"remainingUncertainty":0.0,"nextBestObservation":"","next_acceptance_contract":"","next_readonly_input_paths":[],"next_allowed_output_paths":[],"critique_items":[{"category":"","severity":"low","suggestion":""}]}',
+    "next_action 只能是 accept、continue、revise 或 escalate。",
+    "当 next_action=continue 时，next_acceptance_contract 必须是非空的下一轮验收合同；next_readonly_input_paths 和 next_allowed_output_paths 必须描述下一轮边界，没有则填空数组。",
+    "如果存在阻塞问题，next_action 必须是 revise 或 escalate，不能是 accept 或 continue。",
     "Ego/Superego 的 needs_attention、blocked 或 escalate 不是用户人工介入结论；你必须独立判断它们是返工信号还是用户必须参与的真实阻塞。",
     "critique_items 每一项必须包含 category、severity、suggestion；severity 只能是 low、medium 或 high。",
     "",
@@ -239,13 +242,14 @@ export function buildHaFinalReviewRepairPrompt(rawOutput: string, errorMessage: 
     "",
     "请把上一条终验意图重新提交为 ha_final_review 工具调用。不要解释，不要输出 Markdown 代码块，不要输出普通文本。",
     "ha_final_review 参数格式：",
-    '{"blocking_issues":0,"quality_score":0.0,"summary":"","next_action":"accept","entropyDelta":"unknown","evidenceQuality":0.0,"remainingUncertainty":0.0,"nextBestObservation":"","critique_items":[{"category":"","severity":"low","suggestion":""}]}',
-    "next_action 只能是 accept、revise 或 escalate。",
+    '{"blocking_issues":0,"quality_score":0.0,"summary":"","next_action":"accept","entropyDelta":"unknown","evidenceQuality":0.0,"remainingUncertainty":0.0,"nextBestObservation":"","next_acceptance_contract":"","next_readonly_input_paths":[],"next_allowed_output_paths":[],"critique_items":[{"category":"","severity":"low","suggestion":""}]}',
+    "next_action 只能是 accept、continue、revise 或 escalate。",
     "如果原意是通过、approve、approved、pass、complete 或 ok，改写为 accept。",
+    "如果原意是当前合同通过且应继续下一阶段，改写为 continue，并补齐 next_acceptance_contract 与下一轮边界数组。",
     "如果原意是返工、retry、fix、rework、needs_revision 或 reject，改写为 revise。",
     "如果原意是阻塞、blocked、needs_attention 或需要人工介入，改写为 escalate。",
     "只有 HA 终验的 escalate 会成为用户可见的人工介入结论；如果原意只是 Ego/Superego 需要继续处理的问题，应改写为 revise。",
-    "如果存在阻塞问题，blocking_issues 必须大于 0，next_action 必须是 revise 或 escalate。",
+    "如果存在阻塞问题，blocking_issues 必须大于 0，next_action 必须是 revise 或 escalate，不能是 accept 或 continue。",
     "",
     "上一条输出：",
     rawOutput.slice(-8000),
@@ -435,10 +439,10 @@ export function buildSuperegoRepairPrompt(rawOutput: string, errorMessage: strin
   ].join("\n");
 }
 
-export function parseCritique(text: string, source = "评审者"): CritiqueResult {
+export function parseCritique(text: string, source = "评审者", options: { allowContinue?: boolean } = {}): CritiqueResult {
   const jsonText = extractJson(text, source);
   const parsed = JSON.parse(jsonText) as unknown;
-  return validateCritique(parsed);
+  return validateCritique(parsed, options);
 }
 
 export function parseEgoResult(text: string): EgoResult {
@@ -547,7 +551,7 @@ function validateVerification(value: unknown, index: number): EgoResult["verific
   return { command, result, notes };
 }
 
-function validateCritique(value: unknown): CritiqueResult {
+function validateCritique(value: unknown, options: { allowContinue?: boolean } = {}): CritiqueResult {
   if (!value || typeof value !== "object") {
     throw new Error("Superego JSON schema 校验失败：顶层必须是对象");
   }
@@ -555,9 +559,20 @@ function validateCritique(value: unknown): CritiqueResult {
   const blockingIssues = toFiniteNumber(parsed.blocking_issues, "blocking_issues");
   const qualityScore = toFiniteNumber(parsed.quality_score, "quality_score");
   const summary = requireString(parsed.summary, "summary");
-  const nextAction = normalizeNextAction(parsed.next_action, blockingIssues);
+  const nextAction = normalizeNextAction(parsed.next_action, blockingIssues, options);
   if (!Array.isArray(parsed.critique_items)) {
     throw new Error("Superego JSON schema 校验失败：critique_items 必须是数组");
+  }
+  const nextAcceptanceContract = typeof parsed.next_acceptance_contract === "string" ? parsed.next_acceptance_contract : undefined;
+  const nextReadonlyInputPaths = optionalStringArrayOrUndefined(parsed.next_readonly_input_paths, "next_readonly_input_paths");
+  const nextAllowedOutputPaths = optionalStringArrayOrUndefined(parsed.next_allowed_output_paths, "next_allowed_output_paths");
+  if (nextAction === "continue") {
+    if (blockingIssues > 0) {
+      throw new Error("HA 终验 JSON schema 校验失败：next_action=continue 时 blocking_issues 必须为 0");
+    }
+    if (!nextAcceptanceContract?.trim()) {
+      throw new Error("HA 终验 JSON schema 校验失败：next_action=continue 必须提供 next_acceptance_contract");
+    }
   }
 
   return {
@@ -569,6 +584,9 @@ function validateCritique(value: unknown): CritiqueResult {
     evidenceQuality: optionalScore(parsed.evidenceQuality),
     remainingUncertainty: optionalScore(parsed.remainingUncertainty),
     nextBestObservation: typeof parsed.nextBestObservation === "string" ? parsed.nextBestObservation : undefined,
+    next_acceptance_contract: nextAction === "continue" ? nextAcceptanceContract : undefined,
+    next_readonly_input_paths: nextAction === "continue" ? nextReadonlyInputPaths ?? [] : undefined,
+    next_allowed_output_paths: nextAction === "continue" ? nextAllowedOutputPaths ?? [] : undefined,
     reflectionIntent: validateReflectionIntent(parsed.reflectionIntent),
     critique_items: parsed.critique_items.map((item, index) => validateCritiqueItem(item, index)),
   };
@@ -612,6 +630,11 @@ function optionalStringArray(value: unknown, field: string): string[] {
   return requireStringArray(value, field);
 }
 
+function optionalStringArrayOrUndefined(value: unknown, field: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  return requireStringArray(value, field);
+}
+
 function toFiniteNumber(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`Superego JSON schema 校验失败：${field} 必须是数字`);
@@ -619,7 +642,7 @@ function toFiniteNumber(value: unknown, field: string): number {
   return value;
 }
 
-function normalizeNextAction(value: unknown, blockingIssues: number): CritiqueResult["next_action"] {
+function normalizeNextAction(value: unknown, blockingIssues: number, options: { allowContinue?: boolean } = {}): CritiqueResult["next_action"] {
   if (typeof value !== "string") {
     throw new Error("Superego JSON schema 校验失败：next_action 必须是字符串");
   }
@@ -643,8 +666,22 @@ function normalizeNextAction(value: unknown, blockingIssues: number): CritiqueRe
   if (normalized === "blocked" || normalized === "blocker" || normalized === "needs_attention") {
     action = "escalate";
   }
-  if (action) return action === "accept" && blockingIssues > 0 ? "revise" : action;
-  throw new Error("Superego JSON schema 校验失败：next_action 必须是 accept、revise 或 escalate");
+  if (
+    options.allowContinue &&
+    (normalized === "continue" ||
+      normalized === "continued" ||
+      normalized === "post_accept_continue" ||
+      normalized === "post_accept_continuation" ||
+      normalized === "accept_and_continue")
+  ) {
+    action = "continue";
+  }
+  if (action) return (action === "accept" || action === "continue") && blockingIssues > 0 ? "revise" : action;
+  throw new Error(
+    options.allowContinue
+      ? "HA 终验 JSON schema 校验失败：next_action 必须是 accept、continue、revise 或 escalate"
+      : "Superego JSON schema 校验失败：next_action 必须是 accept、revise 或 escalate",
+  );
 }
 
 function normalizeEntropyDelta(value: unknown): CritiqueResult["entropyDelta"] {

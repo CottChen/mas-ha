@@ -1419,7 +1419,7 @@ function haFinalReviewToolSpec(): StructuredOutputToolSpec<CritiqueResult> {
     description: "提交 MAS HA 代表用户视角的最终验收结论。必须作为最终动作调用，不要再输出普通文本。",
     promptSnippet: "提交 MAS HA 最终验收结论",
     promptGuidelines: ["HA 终验时必须调用 ha_final_review 作为最终动作；调用后不要继续输出文本。"],
-    parameters: reviewParameters("HA 最终验收"),
+    parameters: reviewParameters("HA 最终验收", { allowPostAcceptContinuation: true }),
     resultText: "HA final review captured",
   };
 }
@@ -1436,12 +1436,14 @@ function superegoReviewToolSpec(): StructuredOutputToolSpec<CritiqueResult> {
   };
 }
 
-function reviewParameters(label: string): unknown {
-  return Type.Object({
+function reviewParameters(label: string, options: { allowPostAcceptContinuation?: boolean } = {}): unknown {
+  const nextActionLiterals: any[] = [Type.Literal("accept"), Type.Literal("revise"), Type.Literal("escalate")];
+  if (options.allowPostAcceptContinuation) nextActionLiterals.splice(1, 0, Type.Literal("continue"));
+  const fields: any = {
     blocking_issues: Type.Number({ description: `${label}阻塞问题数量` }),
     quality_score: Type.Number({ description: "质量评分，0 到 1" }),
     summary: Type.String({ description: `${label}摘要` }),
-    next_action: Type.Union([Type.Literal("accept"), Type.Literal("revise"), Type.Literal("escalate")], {
+    next_action: Type.Union(nextActionLiterals, {
       description: "下一步动作",
     }),
     entropyDelta: Type.Optional(Type.Union([Type.Literal("decreased"), Type.Literal("increased"), Type.Literal("unchanged"), Type.Literal("unknown")])),
@@ -1458,7 +1460,19 @@ function reviewParameters(label: string): unknown {
       }),
       { description: "评审问题列表" },
     ),
-  });
+  };
+  if (options.allowPostAcceptContinuation) {
+    fields.next_acceptance_contract = Type.Optional(
+      Type.String({ description: "next_action=continue 时必须填写的下一轮验收合同；其他状态为空或省略" }),
+    );
+    fields.next_readonly_input_paths = Type.Optional(
+      Type.Array(Type.String({ description: "下一轮合同的只读输入路径；没有则为空数组" }), { description: "下一轮只读输入边界" }),
+    );
+    fields.next_allowed_output_paths = Type.Optional(
+      Type.Array(Type.String({ description: "下一轮合同允许写入的路径；无法缩小时使用当前工作目录" }), { description: "下一轮允许输出边界" }),
+    );
+  }
+  return Type.Object(fields);
 }
 
 function toToolEvent(id: string, toolName: string, rawInput: unknown, role?: RoleName): ToolEventInput {
