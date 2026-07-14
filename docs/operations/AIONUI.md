@@ -1,6 +1,6 @@
 # AionUI 接入与模型配置
 
-本文记录 MAS 接入 AionUI 自定义 ACP Agent 的配置方式，以及 Pi SDK 模型、角色模型和外部检索的本地配置方法。系统定位、角色职责和工具分工的权威说明见 [ARCHITECTURE.md](ARCHITECTURE.md)。
+本文记录 MAS 接入 AionUI 自定义 ACP Agent 的配置方式，以及 Pi SDK 模型、角色模型和外部检索的本地配置方法。系统定位、角色职责和工具分工的权威说明见 [系统架构](../architecture/ARCHITECTURE.md)。
 
 ## 前置检查
 

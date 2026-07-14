@@ -1,10 +1,19 @@
 # 历史文档归档
 
-本目录保存已被当前权威文档吸收或替代的历史设计快照、演示材料和完成清单，仅用于追溯，不代表当前目标设计或实现状态。
+本目录只保存历史证据，不代表当前设计或实现。当前文档入口见 [文档导航](../README.md)。
 
-使用规则：
+## 分类
 
-- 当前设计以 [../ARCHITECTURE.md](../ARCHITECTURE.md) 和对应专题文档为准。
-- 当前实现与理念的未解决偏差以 [../DESIGN_ALIGNMENT_TODO.md](../DESIGN_ALIGNMENT_TODO.md) 为准。
-- 归档文档不继续同步代码、Prompt、配置或路线图。
-- 不从归档文档复制规则回当前文档；如需恢复某项设计，应先重新验证其适用性。
+| 目录 | 内容 |
+| --- | --- |
+| [design-snapshots/](design-snapshots/) | 被替代的架构、TODO、测试计划和分支设计快照。 |
+| [presentations/](presentations/) | 分享稿、幻灯片和阶段性演示材料。 |
+| [case-studies/](case-studies/) | 单次任务、特定项目或特定 run 的取证与导出。 |
+
+## 使用规则
+
+- 当前目标设计以 [系统架构](../architecture/ARCHITECTURE.md) 和对应专题文档为准。
+- 当前理念偏差以 [理念对齐 TODO](../quality/DESIGN_ALIGNMENT_TODO.md) 为准。
+- 归档材料不继续同步代码、Prompt、配置、行数、表数量或路线图。
+- 不直接从归档复制规则回当前文档；恢复设计前必须重新核对当前代码和真实任务证据。
+- 归档文件保留原始内容和文件名，目录移动只用于分类。

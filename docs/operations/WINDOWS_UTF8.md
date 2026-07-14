@@ -14,9 +14,9 @@
 优先使用 Git Bash 查看和验证中文文档：
 
 ```bash
-sed -n '1,120p' docs/WINDOWS_UTF8.md
-file -bi docs/WINDOWS_UTF8.md
-xxd -l 3 docs/WINDOWS_UTF8.md
+sed -n '1,120p' docs/operations/WINDOWS_UTF8.md
+file -bi docs/operations/WINDOWS_UTF8.md
+xxd -l 3 docs/operations/WINDOWS_UTF8.md
 ```
 
 预期结果：
@@ -28,7 +28,7 @@ xxd -l 3 docs/WINDOWS_UTF8.md
 
 ```powershell
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Get-Content -Raw -Encoding UTF8 .\docs\WINDOWS_UTF8.md
+Get-Content -Raw -Encoding UTF8 .\docs\operations\WINDOWS_UTF8.md
 ```
 
 如果必须在 PowerShell 中写中文文件，使用 .NET API 显式写无 BOM UTF-8：

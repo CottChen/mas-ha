@@ -1,6 +1,6 @@
 # MAS 开发者指令
 
-本文件面向开发和维护 MAS 的人员与 coding agent，只记录长期有效的开发规范和关键经验。系统设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，运行配置见 [docs/AIONUI.md](docs/AIONUI.md)，Prompt 说明见 [docs/AGENT_PROMPTS.md](docs/AGENT_PROMPTS.md)，当前设计偏差见 [docs/DESIGN_ALIGNMENT_TODO.md](docs/DESIGN_ALIGNMENT_TODO.md)。
+本文件面向开发和维护 MAS 的人员与 coding agent，只记录长期有效的开发规范和关键经验。文档入口见 [docs/README.md](docs/README.md)，系统设计见 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)，运行配置见 [docs/operations/AIONUI.md](docs/operations/AIONUI.md)，Prompt 说明见 [docs/architecture/AGENT_PROMPTS.md](docs/architecture/AGENT_PROMPTS.md)，当前设计偏差见 [docs/quality/DESIGN_ALIGNMENT_TODO.md](docs/quality/DESIGN_ALIGNMENT_TODO.md)。
 
 ## 基本要求
 
@@ -57,7 +57,7 @@ Agent 负责开放语义判断：
 - 基础 Prompt 只写可泛化原则。Excel、Office、特定文件格式、历史业务案例、某次 bug 和固定排查步骤应进入技能、动态任务上下文、validator 或专题文档。
 - Prompt 中的工具说明应表达选择依据和证据标准，不应依赖关键词触发，也不要重复框架已经强制保证的规则。
 - typed tool 让 Agent 的开放判断可解析、可对账、可审计，但 schema 通过不代表内容真实；框架仍需结合系统证据校验。
-- 不通过“文案看起来合理”或模型自评批准 Prompt 修改。默认 Prompt 变化必须按 [docs/DESIGN_ALIGNMENT_TODO.md](docs/DESIGN_ALIGNMENT_TODO.md) 使用真实任务做旧版/新版对照，检查完成率、验收通过率、无效升级、返工收敛、外部证据质量、越权和成本。
+- 不通过“文案看起来合理”或模型自评批准 Prompt 修改。默认 Prompt 变化必须按 [docs/quality/TESTING.md](docs/quality/TESTING.md) 使用真实任务做旧版/新版对照，检查完成率、验收通过率、无效升级、返工收敛、外部证据质量、越权和成本。
 
 ## 代码分层
 
@@ -78,9 +78,9 @@ Agent 负责开放语义判断：
 ## 文档与经验
 
 - [AGENTS.md](AGENTS.md) 只保存长期开发规范和经验证的关键经验；运行步骤、配置示例、排查细节、设计说明和任务清单写入对应 [docs/](docs/) 文档。
-- 系统理念、角色职责、模型与工具边界只在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 定义；Prompt 方法和当前结构见 [docs/AGENT_PROMPTS.md](docs/AGENT_PROMPTS.md)。
-- 当前实现与理念的偏差、待讨论设计和 Prompt 真实任务测试统一维护在 [docs/DESIGN_ALIGNMENT_TODO.md](docs/DESIGN_ALIGNMENT_TODO.md)。
-- 路线与阶段目标维护在 [docs/ROADMAP.md](docs/ROADMAP.md)；缺陷维护在 [bug-tracking/](bug-tracking/)；历史材料移入 [docs/archive/](docs/archive/)，不得作为当前权威来源。
+- 系统理念、角色职责、模型与工具边界只在 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) 定义；Prompt 方法和当前结构见 [docs/architecture/AGENT_PROMPTS.md](docs/architecture/AGENT_PROMPTS.md)。
+- 当前实现与理念的偏差、待讨论设计和 Prompt 真实任务测试统一维护在 [docs/quality/DESIGN_ALIGNMENT_TODO.md](docs/quality/DESIGN_ALIGNMENT_TODO.md)。
+- 路线与阶段目标维护在 [docs/planning/ROADMAP.md](docs/planning/ROADMAP.md)；缺陷维护在 [bug-tracking/](bug-tracking/)；历史材料移入 [docs/archive/](docs/archive/)，不得作为当前权威来源。
 - Markdown 引用文件或目录必须使用 Markdown 链接；仓库内目标使用相对当前文档的相对路径，仓库外目标使用绝对路径。命令参数、配置值和通配符示例仍使用代码格式，不伪装成文件链接。链接目标里有空格和中文括号等普通 Markdown 解析器容易把路径截断的情况下，应把目标路径用尖括号包起来。
 - 外部信息必须核对可访问的原始来源；搜索摘要只能作为线索。无法打开、权限受限或内容不完整时必须说明不确定性。
 - 用户纠正并确认某项长期经验后，先总结并询问是否保留；用户要求保留时默认写入本文件，具体细节另写专题文档。

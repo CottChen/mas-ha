@@ -1,38 +1,42 @@
 # MAS 文档导航
 
-本文是 [docs/](./) 的入口和文档边界说明。新增或修改文档时，先确认内容应落在哪个权威文档，避免同一规则在多个文件中重复维护。
+`docs/` 只保存当前仍需维护的权威说明和专题规则。历史快照、分享材料、单次任务取证和被替代方案统一进入 [archive/](archive/)，不得作为当前实现依据。
 
-## 权威文档
+## 架构
 
-| 文档 | 维护内容 | 不应包含 |
-| --- | --- | --- |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 理论来源与设计转译、系统定位、组织和角色边界、执行链路、异质工具、模型策略、审计和会话语义 | 具体启动命令、长篇测试证据 |
-| [AIONUI.md](AIONUI.md) | AionUI 接入、ACP 验证、本地模型和外部检索配置、日志排查 | 架构原则和角色哲学 |
-| [AGENT_PROMPTS.md](AGENT_PROMPTS.md) | HA/Ego/Superego 基础 prompt、typed tool、上下文注入顺序 | 运行配置和路线图 |
-| [AUTONOMY.md](AUTONOMY.md) | Experience Graph、自主调度、Reflection、Dream、AuditPacket 细节 | AionUI 接入步骤 |
-| [ROADMAP.md](ROADMAP.md) | 当前系统状态、近期硬化、中期能力和生产化路线 | 已关闭 bug 和测试证据 |
-| [E2E_TEST_PLAN.md](E2E_TEST_PLAN.md) | 可复用端到端测试范围、用例矩阵和自动化入口 | 某次测试执行证据 |
-| [../bug-tracking/README.md](../bug-tracking/README.md) | 缺陷生命周期规则 | 架构方案 |
-
-## 专题文档
-
-| 文档 | 定位 |
+| 文档 | 唯一职责 |
 | --- | --- |
-| [DESIGN_ALIGNMENT_TODO.md](DESIGN_ALIGNMENT_TODO.md) | 当前实现、Prompt 与 MAS 核心理念之间尚未解决的设计偏差和真实任务测试要求。 |
-| [COMM_VERSIONING.md](COMM_VERSIONING.md) | 通信、事件和版本追溯专题。 |
-| [HIGH_RISK_SAMPLING.md](HIGH_RISK_SAMPLING.md) | 高风险抽样策略专题。 |
-| [CANDIDATE_PROMOTION.md](CANDIDATE_PROMOTION.md) | 候选晋升策略专题。 |
-| [WINDOWS_UTF8.md](WINDOWS_UTF8.md) | Windows 中文和 UTF-8 编码排查专题。 |
+| [系统架构](architecture/ARCHITECTURE.md) | 理论来源、目标设计、角色边界、执行链路、模型与工具策略。 |
+| [自主性机制](architecture/AUTONOMY.md) | 当前 Experience Graph、Reflection、Dream 和调度机制。 |
+| [Agent Prompt](architecture/AGENT_PROMPTS.md) | Prompt 方法、角色人格、上下文和 typed tool 边界。 |
 
-## 历史归档
+## 运行
 
-已被吸收或替代的设计快照、演示材料和完成清单统一放在 [archive/](archive/)。归档内容只用于追溯，不继续同步代码，也不是当前权威来源；具体规则见 [archive/README.md](archive/README.md)。
+| 文档 | 唯一职责 |
+| --- | --- |
+| [AionUI 接入](operations/AIONUI.md) | ACP 接入、模型配置、外部检索和本地排障。 |
+| [Windows UTF-8](operations/WINDOWS_UTF8.md) | Windows 中文路径、终端和文件编码规则。 |
+
+## 质量
+
+| 文档 | 唯一职责 |
+| --- | --- |
+| [理念对齐 TODO](quality/DESIGN_ALIGNMENT_TODO.md) | 代码、Prompt、文档与核心理念之间尚未解决的偏差。 |
+| [测试与验证](quality/TESTING.md) | 自动化门禁、真实任务测试和验证证据要求。 |
+| [高风险抽样](quality/HIGH_RISK_SAMPLING.md) | 数据、代码和文档任务的抽样复核原则。 |
+
+## 治理与规划
+
+| 文档 | 唯一职责 |
+| --- | --- |
+| [候选晋升](governance/CANDIDATE_PROMOTION.md) | eval、validator、policy、skill 和 doc candidate 的晋升规则。 |
+| [路线图](planning/ROADMAP.md) | 阶段目标和生产化方向，不记录具体缺陷或待办。 |
+| [缺陷跟踪](../bug-tracking/README.md) | 缺陷生命周期和复测状态。 |
 
 ## 维护规则
 
-- 理论来源与设计转译、系统定位、组织关系、角色职责、模型策略和工具分工只在 [ARCHITECTURE.md](ARCHITECTURE.md) 定义；其他文档引用或简述，不重复扩写。
-- AionUI 命令、环境变量、ACP handshake、模型和检索端点配置只在 [AIONUI.md](AIONUI.md) 维护。
-- prompt 文本或 typed tool schema 变化必须同步 [AGENT_PROMPTS.md](AGENT_PROMPTS.md)。
-- 自主调度、Experience Graph、Reflection、Dream、AuditPacket 细节变化必须同步 [AUTONOMY.md](AUTONOMY.md)。
-- 阶段目标和生产化计划只写 [ROADMAP.md](ROADMAP.md)，不要塞进 [../AGENTS.md](../AGENTS.md)。
-- 历史报告和已吸收的方案文档移入 [archive/](archive/)；必要证据迁入 [../bug-tracking/](../bug-tracking/)、测试计划或当前权威文档。
+- 同一规则只在一个权威文档中完整定义，其他位置只链接，不复制。
+- 目标设计写入架构文档；当前偏差写入理念 TODO；执行方法写入运行文档；阶段目标写入路线图。
+- Prompt 或 typed tool 变化同步更新 [Agent Prompt](architecture/AGENT_PROMPTS.md)，并按 [测试与验证](quality/TESTING.md) 完成真实任务对照。
+- 已关闭 TODO 由 Git 历史保留，不在当前文档长期堆积。
+- 带静态代码行数、表数量、某次 run 数据或阶段性结论的材料默认属于归档。

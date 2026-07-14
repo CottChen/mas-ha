@@ -26,12 +26,12 @@ npm run doctor
 ## 文档入口
 
 - [文档导航](docs/README.md)：所有文档的职责边界和维护规则。
-- [系统架构](docs/ARCHITECTURE.md)：系统定位、角色边界、执行链路、异质工具、模型策略和审计语义。
-- [AionUI 接入](docs/AIONUI.md)：AionUI 自定义 Agent、ACP handshake、模型配置、外部检索配置和日志排查。
-- [自主性设计](docs/AUTONOMY.md)：Experience Graph、Reflection、Dream、AuditPacket 和 autonomy daemon。
-- [Agent Prompt](docs/AGENT_PROMPTS.md)：HA / Ego / Superego 基础 prompt、typed tool 和上下文注入顺序。
-- [路线图](docs/ROADMAP.md)：当前系统状态、近期硬化目标和生产化路线。
-- [端到端测试计划](docs/E2E_TEST_PLAN.md)：测试范围、用例矩阵和自动化入口。
+- [系统架构](docs/architecture/ARCHITECTURE.md)：系统定位、理论来源、角色边界、执行链路和模型/工具策略。
+- [AionUI 接入](docs/operations/AIONUI.md)：AionUI 自定义 Agent、ACP handshake、模型配置、外部检索配置和日志排查。
+- [自主性设计](docs/architecture/AUTONOMY.md)：Experience Graph、Reflection、Dream、AuditPacket 和 autonomy daemon。
+- [Agent Prompt](docs/architecture/AGENT_PROMPTS.md)：HA / Ego / Superego 的 Prompt 方法、typed tool 和上下文边界。
+- [测试与验证](docs/quality/TESTING.md)：自动化门禁、真实任务对照和验证证据要求。
+- [路线图](docs/planning/ROADMAP.md)：阶段目标和生产化路线。
 - [缺陷跟踪](bug-tracking/README.md)：bug 生命周期维护规则。
 
 ## 核心能力
@@ -64,7 +64,7 @@ npm run doctor
 /home/admin/mas-impl/bin/mas acp --approve-all
 ```
 
-完整接入和模型配置见 [docs/AIONUI.md](docs/AIONUI.md)。
+完整接入和模型配置见 [docs/operations/AIONUI.md](docs/operations/AIONUI.md)。
 
 ## Pi 依赖
 
@@ -78,4 +78,4 @@ MAS 不依赖全局 `pi` 命令，也不依赖本机 Pi 源码目录。
 
 ## 当前边界
 
-当前本地系统化阶段暂未包含 Temporal、PostgreSQL、NATS、对象存储和远程控制面；这些能力属于后续生产化路线，见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+当前本地系统化阶段暂未包含 Temporal、PostgreSQL、NATS、对象存储和远程控制面；这些能力属于后续生产化路线，见 [docs/planning/ROADMAP.md](docs/planning/ROADMAP.md)。

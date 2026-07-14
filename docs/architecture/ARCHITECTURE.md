@@ -1,6 +1,6 @@
 # MAS 系统架构
 
-本文是 MAS 当前架构的权威说明。运行配置见 [AIONUI.md](AIONUI.md)，提示词维护见 [AGENT_PROMPTS.md](AGENT_PROMPTS.md)，自主调度细节见 [AUTONOMY.md](AUTONOMY.md)，路线图见 [ROADMAP.md](ROADMAP.md)。
+本文是 MAS 目标架构的权威说明。运行配置见 [AionUI 接入](../operations/AIONUI.md)，Prompt 方法见 [AGENT_PROMPTS.md](AGENT_PROMPTS.md)，自主调度细节见 [AUTONOMY.md](AUTONOMY.md)，当前理念偏差见 [理念对齐 TODO](../quality/DESIGN_ALIGNMENT_TODO.md)，阶段路线见 [ROADMAP.md](../planning/ROADMAP.md)。
 
 ## 系统定位
 
@@ -31,7 +31,7 @@ MAS 借用的是相互作用的心理结构，而不是临床心理学结论：
 - Id 对应模型尚未被现实约束筛选的生成势能、联想、欲望和候选路径；它不是独立对外执行角色。
 - Ego 是现实原则下的行动者，把候选路径放进当前任务、工具、权限、成本和外部世界中检验，并承担真实交付责任。
 - Superego 是内化规范、长期价值和自我审查机制，对 Ego 的行动进行约束、证伪和反思，但不能脱离现实证据追求抽象完美。
-- Dream 允许在低权限环境中重组经验、释放固定模式和生成新候选，但不能直接写用户工作区或向用户交付结论。
+- Dream 是 MAS 额外设计的低权限离线经验重组机制，不是 Freud 三结构中的第四个结构。它可以释放固定模式和生成新候选，但不能直接写用户工作区或向用户交付结论。
 
 因此，Ego 和 Superego 不是两个轮流说话的模型，而是同一智能系统中现实行动与规范反思的两个运行面。任何一方失去另一方都会退化：只有 Ego 容易短视和合理化，只有 Superego 容易停滞、苛责和脱离交付。
 
@@ -66,6 +66,23 @@ MAS 使用“熵”作为工程上的不确定性视角，而不是声称当前�
 - 重复同一推理、同一工具和同一失败路径而没有新增证据，不属于自主改进。
 - `EntropyLedger`、evidence score 和 information gain 当前是可审计启发式量，应通过校准和回归数据逐步逼近可靠指标，不能把人为权重伪装成自然定律。
 
+### 混沌系统：敏感性、吸引子与受控扰动
+
+Lorenz 在确定性非线性系统中观察到，略有不同的初始状态可能演化为显著不同的后续状态：
+
+> “slightly differing initial states can evolve into considerably different states.”
+
+原始来源：Edward N. Lorenz，*Deterministic Nonperiodic Flow*，1963，https://doi.org/10.1175/1520-0469(1963)020%3C0130:DNF%3E2.0.CO;2。
+
+MAS 只转译其中可操作的工程启发：
+
+- Agent 可能在重复 Prompt、相同工具顺序和相同证据盲区中形成稳定失败模式。
+- 系统应先识别重复轨迹，再施加有限、可复现、低权限的上下文或验证策略扰动。
+- 扰动必须保留 seed、输入、控制动作和结果，比较它是否产生新证据并改善收敛。
+- 高风险或不稳定行为需要通过预算、权限、确定性门禁和负反馈抑制。
+
+当前 MAS 没有定义完整状态空间、Lyapunov 指标、分岔或严格吸引子检测，因此只能称为“受混沌系统启发的受控扰动”，不能宣称实现了混沌动力系统。当前实现偏差见 [理念对齐 TODO](../quality/DESIGN_ALIGNMENT_TODO.md)。
+
 ### 组织模型：把 Agent 当作人来组织
 
 MAS 把 Agent 视为具有能力、性格、注意力、经验、工具、权限和责任边界的“人”，而不是无状态函数。系统能力来自组织，而不只来自最强的单个模型。
@@ -88,7 +105,7 @@ Tool-MAD 指出传统多智能体辩论主要依赖模型内部知识或静态�
 
 原始来源：Seyeon Jeong、Yeonjun Choi、JongWook Kim、Beakcheol Jang，*Tool-MAD: A Multi-Agent Debate Framework for Fact Verification with Diverse Tool Augmentation and Adaptive Retrieval*，arXiv:2601.04742，2026-01-08，https://arxiv.org/abs/2601.04742。
 
-论文名称是 Tool-MAD；MAS 在此基础上做组织化扩展：异质性可以来自不同模型、角色人格、上下文、工具、数据源、权限和评价标准。目标不是制造表面分歧，而是让不同角色拥有真实不同的观察能力和盲区，并由 HA/Superego 对证据相关性、忠实度和任务目标进行裁决。
+论文直接验证的是异质外部工具、自适应查询和 Judge 评价，不是异质模型本身。MAS 在此基础上做组织化扩展：异质性可以来自不同模型、角色人格、上下文、工具、数据源、权限和评价标准。目标不是制造表面分歧，而是让不同角色拥有真实不同的观察能力和盲区，并由 HA/Superego 对证据相关性、忠实度和任务目标进行裁决。
 
 ### 外部知识：避免闭门造车
 
@@ -109,6 +126,7 @@ MAS 把互联网和外部知识视为组织的感知器官，而不是可选装�
 - 心理学隐喻不能替代明确的角色权限、上下文和状态机。
 - 控制论不能退化为固定次数重试；反馈必须能够改变下一步策略。
 - 信息熵不能退化为未经校准的单一分数；必须保留原始证据和不确定性来源。
+- 混沌系统不能退化为随机改写 Prompt；必须先有可观察的重复模式，再记录扰动、结果和稳定性变化。
 - 异质性不能退化为给同一模型换角色名；应产生真实不同的能力、信息或评价视角。
 - 外部检索不能退化为关键词正则触发；应基于信息时效性、知识缺口、问题公共性和预期信息增益判断。
 - 正则、白名单和启发式只能作为风险信号或有限协议适配，不能承担开放语义理解和最终安全证明。
@@ -120,7 +138,9 @@ MAS 把互联网和外部知识视为组织的感知器官，而不是可选装�
 | HA | 面向用户，负责路由、澄清、只读 intake、验收合同、最终用户验收和交叉验证 | 路由阶段使用 MAS 记忆、近期活动、外部检索/读取、工作区只读工具、自动授权只读 `bash` 和 `ha_decision`；终验阶段继续拥有工作区只读工具和自动授权 `bash`，用于独立抽样复算和 `ha_final_review` |
 | Ego | 执行者，负责读取、编辑、运行命令、产出结果和验证记录 | 工作区读写、命令执行、`mas_query_memory`、`ego_result`；不拥有 MAS 近期活动或外部检索工具 |
 | Superego | 系统审计 Critic/Judge，负责基于 AuditPacket artifact、只读检查和历史风险评审 Ego 输出 | AuditPacket artifact 摘要和按需读取工具、只读工作区检查、MAS 记忆/近期活动、自动授权 `bash` 只读复算、`superego_review` |
-| Id / Dream | 低权限经验重组和裁剪 | 只操作 Experience Graph，不写用户工作区，不执行外部工具 |
+| Dream | 低权限经验重组和裁剪 | 只操作 Experience Graph，不写用户工作区，不执行外部工具 |
+
+Id 表示尚未被现实筛选的生成势能，由执行和反思过程中的候选生成能力承载，不是一个独立运行角色。Dream 是低权限、低规约的经验重组过程，也不是 Freud 模型中的第四结构。
 
 HA 和 Superego 都是 Critic，但视角不同：HA 代表用户验收交付价值和真实意图，Superego 代表系统审计边界和证据一致性。只有 HA 终验可以把 run 结束为真正需要用户人工介入；Ego 的 `needs_attention/blocked` 和 Superego 的 `escalate` 都只是内部未完成或升级信号。
 
@@ -237,4 +257,4 @@ run 管理属于 HA 语义判断和 ACP 生命周期审计的交界面。框架�
 
 ## 当前边界
 
-当前本地系统化阶段暂未包含 Temporal、PostgreSQL、NATS、对象存储、远程控制面和生产级多租户。相关演进见 [ROADMAP.md](ROADMAP.md)。
+当前本地系统化阶段暂未包含 Temporal、PostgreSQL、NATS、对象存储、远程控制面和生产级多租户。相关演进见 [ROADMAP.md](../planning/ROADMAP.md)。
