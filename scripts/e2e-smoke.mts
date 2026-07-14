@@ -290,7 +290,7 @@ async function autonomyStorageSmoke(): Promise<void> {
   const autonomyWorkspace = join(tempRoot, "autonomy-workspace");
   mkdirSync(autonomyWorkspace, { recursive: true });
   try {
-    const haPerturbation = perturbations.createCandidate({
+    const defaultPerturbation = perturbations.createCandidate({
       runId: "e2e-perturb-ha",
       targetRole: "ha",
       trigger: "intent_check",
@@ -299,18 +299,25 @@ async function autonomyStorageSmoke(): Promise<void> {
     const egoPerturbation = perturbations.createCandidate({
       runId: "e2e-perturb-ego",
       targetRole: "ego",
-      trigger: "execution_plan",
+      trigger: "stalled_execution_plan",
       sourceRefs: ["e2e:contract"],
     });
     const superegoPerturbation = perturbations.createCandidate({
       runId: "e2e-perturb-superego",
       targetRole: "superego",
       trigger: "review_sampling",
+      critique: {
+        blocking_issues: 1,
+        quality_score: 0.4,
+        summary: "存在阻塞性证据缺口",
+        next_action: "revise",
+        critique_items: [],
+      },
       sourceRefs: ["e2e:audit_packet"],
     });
-    assert(haPerturbation?.payload && typeof haPerturbation.payload === "object", "HA 普通路由应生成低风险上下文扰动");
-    assert(egoPerturbation?.payload && typeof egoPerturbation.payload === "object", "Ego 首轮执行应生成低风险上下文扰动");
-    assert(superegoPerturbation?.payload && typeof superegoPerturbation.payload === "object", "Superego 普通评审应生成低风险上下文扰动");
+    assert(defaultPerturbation === undefined, "普通路由不应无证据地默认增加上下文扰动");
+    assert(egoPerturbation?.payload && typeof egoPerturbation.payload === "object", "显式执行停滞应生成低风险上下文扰动");
+    assert(superegoPerturbation?.payload && typeof superegoPerturbation.payload === "object", "阻塞性返工应生成低风险上下文扰动");
     assert(typeof (egoPerturbation.payload as { seed?: unknown }).seed === "string", "扰动 payload 应记录可复现 seed");
     assert(perturbations.render(egoPerturbation).includes("<context_perturbation"), "扰动应渲染为隔离 context_perturbation 数据块");
 

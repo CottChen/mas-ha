@@ -1,6 +1,6 @@
 # 当前待处理缺陷
 
-本文件只记录仍需修复、澄清或设计决策的问题。已修复待复测的问题移动到 `pending-verification.md`，已验证和已关闭的问题分别移动到 `verified-*` 与 `archive/closed-*`。
+本文件只记录仍需修复、澄清或设计决策的问题。已修复待复测的问题移动到 [pending-verification.md](pending-verification.md)，已验证和已关闭的问题分别移动到 `verified-*` 与 `archive/closed-*` 文件。
 
 ## 汇总
 
@@ -76,8 +76,8 @@
 
 证据：
 
-- `src/types.ts` 声明 `user_feedback`。
-- `src/core/entropy.ts` 当前信号收集路径。
+- [../src/types.ts](../src/types.ts) 声明 `user_feedback`。
+- [../src/core/entropy.ts](../src/core/entropy.ts) 当前信号收集路径。
 - 2026-06-05 独立 E2E 测试曾记录该未覆盖项；历史报告已被文档整理删除，当前缺陷事实以本文为准。
 
 当前判断或修复建议：
@@ -101,7 +101,7 @@
 
 1. 打开 AionUI workspace `custom-temp-1780650717388`。
 2. 观察任务运行期间的折叠“思考中”区域。
-3. 查询 MAS 数据库 `C:/Users/Administrator/.mas/orchestration/data/mas.sqlite` 中 run `7acaa17e-0588-473d-a84e-76978ca13570` 的事件。
+3. 查询 MAS 数据库 [C:/Users/Administrator/.mas/orchestration/data/mas.sqlite](C:/Users/Administrator/.mas/orchestration/data/mas.sqlite) 中 run `7acaa17e-0588-473d-a84e-76978ca13570` 的事件。
 
 期望结果：
 
@@ -121,8 +121,8 @@
 - Workspace：`custom-temp-1780650717388`
 - Session：`mas-b1385ca4-813e-4237-b97e-711627c088e7`
 - Run：`7acaa17e-0588-473d-a84e-76978ca13570`
-- 代码路径：`src/pi/pi-sdk.ts` 将 `thinking_delta` 直接调用 `sink.thought`；`src/acp/acp-sink.ts` 将其发送为 `agent_thought_chunk`。
-- 诊断盲点：`src/pi/pi-sdk.ts` 的 `rawPiEventForStorage` 对 `message_update` 返回 `undefined`。
+- 代码路径：[../src/pi/pi-sdk.ts](../src/pi/pi-sdk.ts) 将 `thinking_delta` 直接调用 `sink.thought`；[../src/acp/acp-sink.ts](../src/acp/acp-sink.ts) 将其发送为 `agent_thought_chunk`。
+- 诊断盲点：[../src/pi/pi-sdk.ts](../src/pi/pi-sdk.ts) 的 `rawPiEventForStorage` 对 `message_update` 返回 `undefined`。
 
 当前判断或修复建议：
 

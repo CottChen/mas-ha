@@ -65,7 +65,7 @@ export function buildAuditPacket(
     cwd,
     outputDir,
     outputBoundary,
-    suggestedSamplingStrategy: buildSuggestedSamplingStrategy(input.egoResult),
+    suggestedSamplingStrategy: buildSuggestedSamplingStrategy(),
     boundaryDiffPolicy: {
       mode: "lightweight_boundary_metadata",
       rules: [
@@ -357,18 +357,7 @@ function extractAbsolutePaths(text: string): string[] {
   return matches.map((path) => path.trim().replace(/[，。,；;：:）)\]}]+$/g, ""));
 }
 
-function buildSuggestedSamplingStrategy(egoResult: EgoResult): AuditPacket["suggestedSamplingStrategy"] {
-  const text = `${egoResult.summary}\n${egoResult.final_response}\n${egoResult.evidence.join("\n")}\n${egoResult.risks.join("\n")}`;
-  const taskHints: string[] = [];
-  if (/excel|xlsx|sheet|表|单元格|省包|市场份额|奖金包/i.test(text)) {
-    taskHints.push("数据表任务：优先抽样复算关键公式、空值/0值/异常值、输出行列结构和模板字段一致性。");
-  }
-  if (/市场份额|share|分母|分子|pdot|省包|工分|潜力/i.test(text)) {
-    taskHints.push("指标测算任务：优先抽样检查分子分母、存量/增量拆分、总量等式和高风险业务规则。");
-  }
-  if (/代码|测试|typecheck|doctor|编译/i.test(text)) {
-    taskHints.push("代码任务：优先抽样检查改动文件、测试覆盖、失败命令和用户可见行为。");
-  }
+function buildSuggestedSamplingStrategy(): AuditPacket["suggestedSamplingStrategy"] {
   return {
     objective: "由 Superego 根据任务类型自主选择分层风险抽样 + 少量随机扰动的低成本、高信息增益只读复核策略。",
     rules: [
@@ -381,7 +370,7 @@ function buildSuggestedSamplingStrategy(egoResult: EgoResult): AuditPacket["sugg
       "如果没有执行抽样，必须说明原因，并降低质量分或提出改进建议。",
       "发现抽样失败、审计矛盾或关键要求未验证时，不能 accept。",
     ],
-    taskHints,
+    taskHints: [],
     randomization: {
       seedHint: "优先使用 runId、任务摘要或输出文件路径派生稳定 seed；如果无法获得 seed，应在评审中说明随机扰动不可复现。",
       strategy: "由 Superego 决定具体随机扰动比例；默认随机样本只占少量，用于补充分层风险抽样，不替代风险抽样。",

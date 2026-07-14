@@ -90,10 +90,6 @@ function activationReason(input: PerturbationInput): string | undefined {
   if ((input.critique?.blocking_issues ?? 0) > 0 && input.critique?.next_action === "revise") return "superego_blocking_revise";
   if ((input.ledger?.uncertaintyScore ?? 0) >= 0.6 && (input.ledger?.informationGainScore ?? 1) <= 0.2) return "high_uncertainty_low_information_gain";
   if (input.trigger.includes("stalled") || input.trigger.includes("low_information_gain")) return "explicit_low_information_gain_trigger";
-  if (input.trigger === "intent_check" || input.trigger === "execution_plan" || input.trigger === "review_sampling" || input.trigger === "final_review") {
-    return "default_low_risk_context_diversity";
-  }
-  if (input.trigger === "ledger_review_sampling") return "ledger_review_context_diversity";
   return undefined;
 }
 

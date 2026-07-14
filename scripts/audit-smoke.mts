@@ -133,7 +133,7 @@ try {
 function egoResult(changedFiles: string[]): EgoResult {
   return {
     status: "completed",
-    summary: "完成数据表任务，包含省包和市场份额测算。",
+    summary: "完成高风险结构化数据任务，并记录关键口径验证。",
     final_response: "已生成输出。",
     evidence: [],
     changed_files: changedFiles,

@@ -1,6 +1,6 @@
 # 待复测缺陷
 
-本文件记录已有修复或处理结论、但尚未独立复测的问题。复测通过后移动到对应 `verified-*.md`，复测失败则移回 `active-bugs.md` 并补充失败证据。
+本文件记录已有修复或处理结论、但尚未独立复测的问题。复测通过后移动到对应 `verified-*.md` 文件，复测失败则移回 [active-bugs.md](active-bugs.md) 并补充失败证据。
 
 ## BUG-20260605-001：`mas autonomy tick` stdout 返回 claim 快照，completed job 仍显示 `running`
 

@@ -13,3 +13,4 @@ coverage/
 .idea/
 .vscode/
 .ipynb_checkpoints/
+.codex/

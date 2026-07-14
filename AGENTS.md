@@ -1,213 +1,93 @@
-# Codex 项目指令
+# MAS 开发者指令
 
-## 开发环境检测
+本文件面向开发和维护 MAS 的人员与 coding agent，只记录长期有效的开发规范和关键经验。系统设计见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，运行配置见 [docs/AIONUI.md](docs/AIONUI.md)，Prompt 说明见 [docs/AGENT_PROMPTS.md](docs/AGENT_PROMPTS.md)，当前设计偏差见 [docs/DESIGN_ALIGNMENT_TODO.md](docs/DESIGN_ALIGNMENT_TODO.md)。
 
-- 开始执行项目命令前必须先判断当前运行环境；检测到 Windows 环境时，必须检查 Git Bash 是否已安装并优先使用 Git Bash 执行项目命令。
-- 如果 Windows 环境缺少 Git Bash，应先提示建议安装 Git Bash，再继续评估是否存在可接受的替代执行方式。
+## 基本要求
 
-## AGENTS.md 的约束
-- `AGENTS.md` 必须保持简洁，只记录长期有效的项目规则和关键经验；具体操作步骤、排查细节和配置示例应写入 `docs/` 下的专门文档。
+- 默认使用简体中文编写文档、注释、说明和最终输出；协议、库名、命令和代码标识符保留原文。
+- 中文 Markdown、Prompt 和技能说明保存为无 BOM UTF-8。
+- 开始执行项目命令前先识别操作系统；Windows 优先使用 Git Bash。缺少 Git Bash 时先说明风险，再评估替代方式。
+- 搜索和日志命令必须限制路径与输出规模；跳过依赖、构建产物、图片、`.map`、锁文件和超长单行内容，避免 ACP/AionUI 输出链路过载。
+- 不把密钥、`.env*`、日志、运行数据、`~/.mas/`、`node_modules/` 或本机模型配置提交到仓库。
 
-## Windows 中文文档编码
+## MAS 核心理念
 
-- 中文 Markdown、提示词和技能说明统一保存为无 BOM UTF-8；Windows 环境优先用 Git Bash 或 Node.js 读取、验证和生成中文文档。
-- PowerShell 读取中文文件前应显式设置 UTF-8 输出编码；写中文文件时不要使用默认 `Set-Content` / `Out-File`，应显式写入无 BOM UTF-8。
-- 看到 `鐢ㄤ簬`、`涓`、`鍙` 这类乱码时，先用 Git Bash 检查原始文件字节，区分“显示链路乱码”和“文件内容损坏”。详细做法见 `docs/WINDOWS_UTF8.md`。
+- 把 Agent 当作组织中有能力、经验、权限、责任和判断力的人，而不是无状态函数或 Prompt 包装器。
+- 用户是 MAS 的上级，HA 代表整个 MAS 对用户负责。MAS 应站在用户目标和整体利益上自主推进，只把重大取舍、必要输入、凭据、权限和不可逆高风险升级给用户。
+- 内部角色分歧、普通失败、工具选择和可自动解决的环境问题由 MAS 内部消化；“遇到困难”本身不是请求用户介入的理由。
+- Freud 模型提供内部动力和职责分化：Id 是未被现实筛选的生成势能，Ego 负责现实行动，Superego 负责规范与反思，Dream 负责低权限经验重组。不要把这些角色退化为多个模型轮流发言。
+- 控制论要求系统根据观测和误差改变后续行动；返工不能只是把同一 Prompt 再运行一次。
+- 信息熵在 MAS 中表示不确定性视角。当前启发式评分不能冒充严格 Shannon entropy；必须保留原始证据、评分版本和不确定性来源。
+- 异质性必须产生真实不同的模型、工具、证据通道、权限或评价视角；仅更换角色名不构成异质系统。
+- 互联网和外部知识是 MAS 的感知能力。涉及最新信息、公共问题、第三方文档、论文、标准、版本或成熟行业实践时，应优先检索并核对原始来源，避免闭门造车。
+- Goal / Subgoal 是低优先级控制实验，不是 MAS 自主性、组织学习或普通任务完成的前置依赖。
 
-## 语言要求
+## 框架与 Agent 边界
 
-- 所有文档、注释、说明和最终输出必须使用简体中文。
-- 代码标识符可以使用英文，代码注释优先使用简体中文。
-- 涉及外部协议、库名、命令名时保留原文，例如 ACP、AionUI、Pi、SQLite、Temporal。
+MAS 框架负责确定性保障：
 
-## 项目定位
+- 角色、会话和上下文隔离。
+- 状态机、轮次、预算、超时、取消和调度租约。
+- 工具能力、最小权限、审批和外部副作用边界。
+- typed tool schema、业务校验和 repair fallback。
+- 结构化验收合同、工作区边界、snapshot/diff、AuditPacket 和事件审计。
+- 哪些状态可以完成、返工、暂停或真正升级用户。
 
-MAS 是一个系统化多智能体执行与自主改进系统，目标是通过 ACP 协议接入 AionUI，并在内部使用 Pi SDK 提供可审计、可验收、可持续改进的 coding agent 能力。
+Agent 负责开放语义判断：
 
-当前核心形态：
+- 理解用户目标、上下文和关键取舍。
+- 规划、执行、发现知识缺口和选择高信息增益行动。
+- 结合工具与外部来源形成证据，并区分事实、推断和自报。
+- 评估交付价值、风险、剩余不确定性和下一最佳观察。
+- 从任务经验中抽象可复用模式，但不能自行修改权限和确定性门禁。
 
-- AionUI 作为 ACP Client / UI。
-- MAS 作为自定义 ACP Agent，对外提供 `mas acp`。
-- Pi SDK 作为 MAS 内部执行内核，不依赖全局 `pi` 命令。
-- HA / Ego / Superego 是 MAS 内部编排角色。
-- 默认权限策略为读操作自动通过，写文件、编辑文件和执行命令需要审批。
+边界规则：
 
-## 技术栈
+- 不用 Prompt 承担权限、安全、状态转换、预算或 schema 保证。
+- 不用正则、关键词、目录名或文本前缀承担开放语义、Goal 完成判断或最终安全证明；它们只能作为有限协议适配、兼容 fallback 或低置信风险信号。
+- 不把当前代码自动视为目标设计。发生冲突时，先依据用户意图、架构原则和可验证不变量判断，再区分目标设计、当前实现和技术债。
+- Agent 自报不能覆盖工具结果、验证输出、AuditPacket、文件状态和其他系统证据。
 
-- 运行时：Node.js 24+。
-- 语言：TypeScript，ESM。
-- 入口执行：`tsx`。
-- 存储：Node 内置 `node:sqlite` 的 `DatabaseSync`，当前会触发 experimental warning，属于预期现象。
-- 外部 UI / 协议：AionUI + ACP JSON-RPC over stdio。
-- Agent 内核：公共 npm 包 `@mariozechner/pi-coding-agent`。
+## Prompt 方法论
 
-## 目录结构
+- Prompt 用于塑造稳定的人格、组织立场、判断气质、证据观、工具纪律、协作方式和收口标准，不用于复制业务 SOP。
+- 先定义“这个 Agent 是谁、对谁负责、如何判断”，再定义“拥有哪些工具、怎样使用证据、何时完成或升级”。
+- 共享 Prompt 只保留少量组织价值；HA、Ego、Superego 应拥有不同的稳定人格和认知偏向，避免共享长清单造成同质化。
+- Ego 偏现实行动、交付和验证；Superego 偏证伪、长期风险和规范一致性，但应保持协作式怀疑，不能退化为机械找错；HA 偏用户意图、组织协调和最终价值验收。
+- 基础 Prompt 只写可泛化原则。Excel、Office、特定文件格式、历史业务案例、某次 bug 和固定排查步骤应进入技能、动态任务上下文、validator 或专题文档。
+- Prompt 中的工具说明应表达选择依据和证据标准，不应依赖关键词触发，也不要重复框架已经强制保证的规则。
+- typed tool 让 Agent 的开放判断可解析、可对账、可审计，但 schema 通过不代表内容真实；框架仍需结合系统证据校验。
+- 不通过“文案看起来合理”或模型自评批准 Prompt 修改。默认 Prompt 变化必须按 [docs/DESIGN_ALIGNMENT_TODO.md](docs/DESIGN_ALIGNMENT_TODO.md) 使用真实任务做旧版/新版对照，检查完成率、验收通过率、无效升级、返工收敛、外部证据质量、越权和成本。
 
-- `bin/mas`：MAS CLI 入口脚本。
-- `src/cli.ts`：命令行分发，包含 `acp`、`run`、`doctor`、`status`。
-- `src/acp/`：ACP JSON-RPC server、AionUI session update 映射、权限请求映射。
-- `src/core/`：HA / Ego / Superego 编排和提示词构造。
-- `src/pi/`：Pi SDK 动态加载和 Pi session 适配。
-- `src/storage.ts`：SQLite 持久化。
-- `src/types.ts`：MAS 内部共享类型。
-- `docs/README.md`：文档导航、权威来源和维护边界。
-- `docs/ARCHITECTURE.md`：系统定位、角色边界、执行链路、异质工具、模型策略、审计和会话语义。
-- `docs/AIONUI.md`：AionUI 接入、ACP 验证、本地模型、外部检索配置和日志排查。
-- `docs/AGENT_PROMPTS.md`：HA / Ego / Superego 基础 prompt、typed tool 和上下文注入顺序。
-- `docs/AUTONOMY.md`：MAS 自主性、Experience Graph、反思、Dream 和 AuditPacket 细节。
-- `docs/ROADMAP.md`：当前系统状态、近期硬化目标和生产化路线。
-- `docs/AUTONOMY_TODO.md`：MAS 自主性机制的具体实施清单。
-- `bug-tracking/`：缺陷跟踪目录，按 active、pending-verification、verified 和 archive/closed 生命周期拆分维护。
+## 代码分层
 
-## 启动和验证命令
+- [src/acp/](src/acp/) 只处理 ACP 协议、会话生命周期、权限事件和 AionUI 展示映射，不放业务编排与语义判断。
+- [src/pi/](src/pi/) 只负责 Pi session、模型与工具适配、事件映射和权限拦截，不决定 HA/Ego/Superego 的业务状态。
+- [src/core/](src/core/) 负责组织编排、状态机、合同、审计、Prompt 构造和自主性控制；状态转换必须显式、可测试、可审计。
+- [src/storage.ts](src/storage.ts) 负责持久化事实，不承担语义裁决。schema 变更必须考虑现有数据和其他 worktree 的兼容性。
+- 公共类型、CLI 参数、存储 schema、权限模型和角色工具协议属于共享边界，修改前必须评估跨模块影响。
 
-Windows 环境优先使用 Git Bash 执行项目命令；`bin/mas` 是 Bash 入口脚本，不按 PowerShell / CMD 原生命令假设。编辑 UTF-8 源码和 `~/.pi/agent/*.json` 时避免使用会写入 BOM 或改写编码的 PowerShell 默认写法，Pi 配置 JSON 必须保持无 BOM UTF-8。
+## 证据与验证
 
-准备 MAS：
+- 验证强度随风险和影响面提高；优先运行能证伪关键假设的最小验证，再扩大范围。
+- 合并前至少运行 `npm run typecheck` 和 `npm run doctor`；涉及审计运行 `npm run smoke:audit`，涉及编排或自主性运行 `npm run e2e:smoke`，涉及 ACP 再运行 handshake smoke test。
+- `node:sqlite` experimental warning 属于当前预期，不等于验证失败。
+- 测试应锁定架构不变量和用户可见行为，不锁死无关 Prompt 字面、临时权重或内部实现细节。
+- 不修复与当前任务无关的问题；发现后按缺陷生命周期记录，不使用破坏性命令覆盖其他协作者改动。
 
-```bash
-cd /home/admin/mas-impl
-npm install
-npm run typecheck
-npm run doctor
-```
+## 文档与经验
 
-作为 AionUI 自定义 ACP Agent：
+- [AGENTS.md](AGENTS.md) 只保存长期开发规范和经验证的关键经验；运行步骤、配置示例、排查细节、设计说明和任务清单写入对应 [docs/](docs/) 文档。
+- 系统理念、角色职责、模型与工具边界只在 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 定义；Prompt 方法和当前结构见 [docs/AGENT_PROMPTS.md](docs/AGENT_PROMPTS.md)。
+- 当前实现与理念的偏差、待讨论设计和 Prompt 真实任务测试统一维护在 [docs/DESIGN_ALIGNMENT_TODO.md](docs/DESIGN_ALIGNMENT_TODO.md)。
+- 路线与阶段目标维护在 [docs/ROADMAP.md](docs/ROADMAP.md)；缺陷维护在 [bug-tracking/](bug-tracking/)；历史材料移入 [docs/archive/](docs/archive/)，不得作为当前权威来源。
+- Markdown 引用文件或目录必须使用 Markdown 链接；仓库内目标使用相对当前文档的相对路径，仓库外目标使用绝对路径。命令参数、配置值和通配符示例仍使用代码格式，不伪装成文件链接。链接目标里有空格和中文括号等普通 Markdown 解析器容易把路径截断的情况下，应把目标路径用尖括号包起来。
+- 外部信息必须核对可访问的原始来源；搜索摘要只能作为线索。无法打开、权限受限或内容不完整时必须说明不确定性。
+- 用户纠正并确认某项长期经验后，先总结并询问是否保留；用户要求保留时默认写入本文件，具体细节另写专题文档。
 
-```bash
-/home/admin/mas-impl/bin/mas acp
-```
+## Git 与协作
 
-高自主模式：
-
-```bash
-/home/admin/mas-impl/bin/mas acp --approve-all
-```
-
-本地直接运行任务：
-
-```bash
-./bin/mas run "阅读当前项目并总结结构"
-```
-
-查看最近任务：
-
-```bash
-./bin/mas status
-```
-
-## AionUI 配置
-
-在 AionUI 的自定义 ACP Agent 中配置命令：
-
-```bash
-/home/admin/mas-impl/bin/mas acp
-```
-
-如果需要免审批自动执行：
-
-```bash
-/home/admin/mas-impl/bin/mas acp --approve-all
-```
-
-默认模式下，MAS 会通过 ACP `session/request_permission` 向 AionUI 请求写文件、编辑文件和执行命令审批。
-
-部分 AionUI 版本在启动自定义 ACP Agent 时会追加 `--experimental-acp` 参数。MAS 必须兼容以下入口，避免 `CLI found but ACP initialization failed.`：
-
-```bash
-/home/admin/mas-impl/bin/mas --experimental-acp
-```
-
-如果 AionUI 识别失败，先查 `~/.config/AionUi/logs/`，再跑 ACP handshake smoke test。不要直接修改 AionUI 运行时配置文件来注入 agent，可能被 AionUI 回写覆盖。详细接入、日志排查、handshake 和模型验证步骤见 `docs/AIONUI.md`。
-
-## 关键约束
-
-- 不要依赖全局 `pi` 命令；当前项目通过公共 npm 包 `@mariozechner/pi-coding-agent` 集成。
-- 不要直接引用本机 Pi 源码目录；需要升级 Pi 时应调整 `package.json` 中的公共包版本并更新锁文件。
-- 不要提交 `node_modules/`、运行数据、日志或本地密钥。
-- 本地运行数据默认在 `~/.mas/`，不要把它迁移进仓库。
-- `node:sqlite` 当前是实验特性，看到 experimental warning 不代表失败。
-- 真实 prompt 执行依赖 Pi 的模型认证和 API key；测试时避免无意触发高权限工具调用。
-- 推送 GitHub 需要本机凭据；当前远程是 `https://github.com/CottChen/mas-ha.git`。
-
-## Pi 模型配置经验
-
-Pi SDK 会读取 `~/.pi/agent/models.json` 和 `~/.pi/agent/settings.json`。DashScope Anthropic 兼容 provider 约定为 `dashscope-anthropic`，默认模型为 `qwen3.6-plus`。真实 API key 只能写入本机用户目录、环境变量或密钥管理器，不能写进仓库、文档示例、日志或提交记录。AionUI 展示模型来自 ACP `session/new`，实际执行模型来自 Pi SDK 配置，两者要保持一致。详细配置和验证命令见 `docs/AIONUI.md`。
-
-## 编码原则
-
-- ACP 层只处理协议转换、会话生命周期和 AionUI 可展示事件，不放业务编排逻辑。
-- Pi 适配层只负责创建 Pi session、映射事件、拦截工具权限，不承担 HA / Ego / Superego 决策。
-- 编排逻辑放在 `src/core/`，保持状态机显式、可测试。
-- HA / Ego / Superego 的内部结构化输出应优先使用 Pi SDK typed tool，MAS 侧必须保留业务 schema 校验和 repair prompt 兜底。
-- MAS 框架负责确定性保障：角色隔离、状态机语义、工具权限、typed tool schema、repair prompt、AuditPacket、允许输出边界推断、snapshot/diff、事件审计和最大轮次控制；这些不能依赖模型自觉遵守。
-- Prompt 负责塑造稳定工作人格和判断倾向，不承担确定性框架职责。写 prompt 应学习 Codex 风格：先定义身份、判断气质和默认品味，再定义工具纪律、证据标准和收口方式；避免用零散禁令或单一 bug 补丁堆成 SOP。
-- 基础 prompt 只写可泛化原则，例如先读上下文、抵抗轻率假设、贴合现有系统、追求真实交付、证据高于自报、关键口径高于表面结构。Excel/Office 兼容、特定文件格式、特定业务案例等领域细节应通过技能或任务上下文按需注入，不写进系统级基础 prompt。
-- 编排语义不能被 prompt 或框架偷偷改写：Ego 应在本轮尽力完成任务；返工由 Superego/HA 的 `revise` 驱动；Ego 的 `needs_attention/blocked` 和 Superego 的 `escalate` 只是内部未完成或升级信号，不能直接结束为用户人工介入。
-- HA 是人类助理层，只负责面向用户接收任务、澄清、验收和汇报；只有 HA 终验可以把 run 结束为真正需要用户人工介入。后台自主性机制不应由 HA 驱动。
-- Ego / Superego / Id-Dream 负责 MAS 内部自主性：Ego 记录任务过程和结果，Superego 生成与裁剪反思意图，Dream 在低权限、低规约模式下重组 Experience Graph。
-- Experience Graph 是 MAS 长期自主性的核心记忆结构，应串联任务、执行过程、结果、经验、反思和 Dream 裁剪；反思可以递归，但必须受能量预算、拓扑约束和审计约束控制。
-- MAS 自主性调度必须跨会话、全局单实例运行；推荐入口是 `mas autonomy daemon`，通过 SQLite scheduler lease 和任务 claim 避免多个 AionUI 会话重复处理同一任务。
-- Superego 评审必须基于 Ego 自报和 MAS 系统审计证据共同判断；`AuditPacket` 中的工具调用、审批、写入路径和 `changed_files` 对账结果优先级高于 Ego 自报。
-- HA 负责代表用户做最终验收和交叉验证；终验阶段可以使用工作区只读工具和自动授权 `bash` 做独立抽样复算，空摘要、`quality_score=0` 或 `evidenceQuality=0` 的 accept 必须被门禁拦截。AionUI 会话模型选择只作用于 HA，用于形成用户代理视角的异质 Critic。Ego 和 Superego 未显式配置角色模型时直接使用 Pi 默认模型。
-- HA 拥有 `mas_external_search` 只读外部检索工具和 `mas_external_read` 只读外部 URL 读取工具，用于引入公开证据候选并核对来源原文；Ego 可以按需使用 `mas_query_memory` 查询 Experience Graph 历史经验候选以吸取过往踩坑，但不应获得 MAS 近期活动、外部检索或外部读取工具，避免执行层扩大任务边界。
-- Superego 拥有工作区只读工具和自动授权 `bash`，用于系统审计和只读抽样复算；`bash` 只允许用于只读验证，不允许执行有副作用的命令，所有调用仍进入审计记录。
-- MAS 必须为未显式设置 `timeout` 的 `bash` 命令应用框架级默认超时，并在基础 prompt 中告知各角色默认值和可按需调整 `timeout` 的方式；默认值和详细策略见 `docs/ARCHITECTURE.md`。
-- Superego 本身是系统审计视角的 Critic/Judge；如需异质强模型必须通过 `MAS_SUPEREGO_MODEL` 显式配置，未配置时不探测其他模型，直接回退 Pi 默认模型。
-- Superego 默认验收策略是当前状态门禁 + 历史事实留痕：当前仍违反用户任务或 HA 验收合同声明的允许输出边界、只读输入路径写入或失败验证伪装为成功时必须阻塞；历史已清理的越界写入和 `changed_files` 漏报必须留痕，但不单独作为永久阻塞。
-- Superego 抽样复核应采用分层风险抽样 + 少量随机扰动；snapshot/diff 只能做边界目录轻量元数据 diff + 风险触发深查，不能默认全量重审计。
-- HA 生成验收合同时必须声明只读输入、允许输出和工作目录边界；baseline snapshot 由 MAS 框架层在 Ego 执行前生成，不能依赖 Ego 自报。
-- Dream 模式允许操作 Experience Graph，但不允许执行外部工具、写用户工作区、创建新嵌套反思或直接向用户发送任务结果。
-- 权限策略必须默认保守：读自动，写和命令需审批。
-- 对用户工作区的写入和命令执行必须能审计，至少记录 runId、toolCallId、toolName、decision 和 rawInput。
-- 新增长期规划、架构演进、阶段目标时写入 `docs/ROADMAP.md`，不要塞进 `AGENTS.md`。
-- 系统定位、角色职责、模型策略和工具分工只在 `docs/ARCHITECTURE.md` 定义；其他文档引用或简述，不重复维护。
-- MAS 自主性的具体实现待办统一维护在 `docs/AUTONOMY_TODO.md`，不要把详细任务清单写入 `AGENTS.md`。
-- 缺陷必须按生命周期进入 `bug-tracking/`：当前待处理维护在 `active-bugs.md`，已修复待复测维护在 `pending-verification.md`，已验证和已关闭问题分别进入 `verified-*` 与 `archive/closed-*`；详细规则见 `bug-tracking/README.md`。
-
-## 多人协作与 Git 约束
-
-- 采用 GitHub 托管，远程仓库为 `git@github.com:CottChen/mas-ha.git`。
-- 默认基线分支为 `main`，功能开发必须从 `main` 切出独立分支，不直接在 `main` 上开发。
-- 每个方向使用独立 worktree，避免多人/多代理在同一目录互相覆盖。
-- 每个 worktree 只能修改自己方向相关文件；跨方向公共接口变更必须先在 PR 或 issue 中说明影响面。
-- 禁止提交 `node_modules/`、`.env*`、`~/.mas/`、日志、密钥和本地运行产物。
-- 合并前必须至少运行 `npm run typecheck` 和 `npm run doctor`；涉及 ACP 的变更还要跑 ACP handshake smoke test。
-- 提交信息使用简短英文祈使句，例如 `Improve ACP session lifecycle`。
-- PR 描述必须包含：目标、主要改动、测试结果、风险和回滚方式。
-- 多人并行时优先小步提交、小 PR；避免长时间分支漂移。
-- 如出现冲突，保留用户或其他协作者已提交的改动，不使用破坏性命令回滚他人工作。
-
-## Worktree 分工
-
-当前约定的长期 worktree：
-
-| 方向 | 人员 | 分支 | 目录 | 默认端口/别名 |
-| --- | --- | --- | --- | --- |
-| ACP 集成，接入 AionUI，通过AionUI直接调用HA | tao | `feature/acp-aionui` | `/home/admin/mas-impl-acp-aionui` | `MAS_DEV_PORT=4111`, `MAS_ALIAS=mas-acp` |
-| Ego+Superego、HA+Ego 模式 |  | `feature/orchestration-modes` | `/home/admin/mas-impl-orchestration` | `MAS_DEV_PORT=4112`, `MAS_ALIAS=mas-orch` |
-| 通信组件、版本追溯，让HA能够使用 | wen | `feature/comm-versioning` | `/home/admin/mas-impl-comm-versioning` | `MAS_DEV_PORT=4113`, `MAS_ALIAS=mas-comm` |
-| 记忆组件，让HA能够使用 | jie | `feature/memory` | `/home/admin/mas-impl-memory` | `MAS_DEV_PORT=4114`, `MAS_ALIAS=mas-memory` |
-
-每个 worktree 根目录应保留本地 `.env.local`，用于端口、别名和本地运行差异配置。`.env.local` 不入库。
-
-`.env.local` 推荐字段：
-
-```bash
-MAS_WORKTREE=<方向标识>
-MAS_ALIAS=<本地别名>
-MAS_DEV_PORT=<唯一端口>
-MAS_ACP_PORT=<唯一端口，如未来引入 HTTP/WebSocket ACP 调试服务>
-MAS_HOME=<隔离的本地数据目录>
-```
-
-端口分配必须唯一。新增 worktree 时从 `4120` 以后递增，避免和既有四个方向冲突。
-
-## 各方向边界
-
-- `feature/acp-aionui`：只负责 ACP 协议兼容、AionUI 自定义 Agent 接入、权限事件、session/update 映射和端到端 smoke test。
-- `feature/orchestration-modes`：只负责 HA/Ego/Superego 状态机、模式切换、返工策略、验收合同和编排测试。
-- `feature/comm-versioning`：只负责内部事件、通信抽象、版本追溯、审计链路、工件版本和回放接口。
-- `feature/memory`：只负责短期/长期记忆、失败模式沉淀、检索增强和记忆隔离策略。
-
-公共类型、CLI 参数、存储 schema、权限模型属于共享边界；改动前必须考虑其他 worktree 的兼容性。
+- 默认基线分支为 `main`；功能开发使用独立分支和独立 worktree，不直接在 `main` 上开发。
+- 每个 worktree 只修改本方向文件；跨方向公共接口变更应先说明影响面。
+- 保留用户和其他协作者已有改动，不使用 `git reset --hard`、破坏性 checkout 或其他方式回滚他人工作。
+- 提交信息使用简短英文祈使句。PR 描述包含目标、主要改动、验证结果、风险和回滚方式。

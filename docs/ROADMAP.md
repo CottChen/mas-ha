@@ -20,6 +20,9 @@ MAS 当前定位为系统化多智能体执行与自主改进系统。当前版�
 ## 近期硬化目标
 
 - 工具与证据治理：
+  - 把外部知识获取提升为近期首要能力：让 HA 在信息具有时效性、本地知识不足、问题具有公共性或存在成熟行业实践时，主动搜索并读取原始来源，而不是依赖模型记忆或闭门实现。
+  - 为外部检索建立“搜索候选 -> 原文读取 -> 来源质量判断 -> 本地交叉验证 -> Evidence Packet”的完整闭环，避免停留在搜索摘要。
+  - 将检索触发从关键词或正则启发式演进为基于时效性、知识缺口、问题公共性、风险和预期信息增益的结构化判断。
   - 为 `mas_external_search` / `mas_external_read` 增加可插拔 provider 文档化测试，覆盖 MCP、DuckDuckGo 后备、自定义 RAG/search endpoint 和 HTTP 读取 fallback。
   - 记录外部检索结果的 URI、retrievedAt、provider、TTL 和 redaction 状态，并沉淀为 `external_fact` 低熵信号。
   - 让 HA 终验在采用外部检索结果时输出明确来源和交叉验证依据。
@@ -53,6 +56,7 @@ MAS 当前定位为系统化多智能体执行与自主改进系统。当前版�
 - 自主改进：
   - 让 Dream 从经验压缩器进一步升级为低熵候选生成器，输出 eval、policy、skill、doc 和 validator candidate。
   - 按信息增益、风险、预算和安全事故指标调度 Reflection、Dream、Consolidation 和 Goal continuation。
+  - Goal / Subgoal 保持为低优先级控制面实验；在外部知识、证据闭环、角色协作和基础验收能力稳定前，不把 Goal 扩展为系统主驱动机制。
 
 ## 生产化路线
 

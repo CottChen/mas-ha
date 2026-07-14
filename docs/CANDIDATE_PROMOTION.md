@@ -26,9 +26,9 @@ mas candidate retire <candidate-id>
 | --- | --- | --- |
 | eval | 有明确输入 fixture 和 expected assertions | 新增或更新测试，运行验证后提交 |
 | validator | 有稳定命令可验证 | 接入 HA 验收合同或 Superego 门禁 |
-| policy | 失败属于长期安全/边界规则 | 先写入专门 docs，再评估是否进入 `AGENTS.md` |
+| policy | 失败属于长期安全/边界规则 | 先写入专门 docs，再评估是否进入 [../AGENTS.md](../AGENTS.md) |
 | skill | 失败需要可复用操作流程 | 用 skill-creator 建立或更新技能 |
-| doc | 经验主要是项目知识 | 写入 `docs/` 专门文档 |
+| doc | 经验主要是项目知识 | 写入 [docs/](./) 专门文档 |
 
 ## 后续门禁
 

@@ -1,13 +1,13 @@
 # 缺陷跟踪规范
 
-本文定义 MAS 项目的缺陷记录、流转和归档规则。长期有效的项目规则仍维护在 `AGENTS.md`，具体缺陷台账维护在本目录。
+本文定义 MAS 项目的缺陷记录、流转和归档规则。长期有效的项目规则仍维护在 [../AGENTS.md](../AGENTS.md)，具体缺陷台账维护在本目录。
 
 ## 目录结构
 
-- `active-bugs.md`：当前待处理缺陷，只保留仍需修复、澄清或设计决策的问题。
-- `pending-verification.md`：已修复但尚未独立复测的问题。
-- `verified-*.md`：已复测通过但尚未关闭的问题，按年份、版本或批次拆分，例如 `verified-2026.md`。
-- `archive/closed-*.md`：已关闭问题，按年份、版本或批次归档，例如 `archive/closed-2026.md`。
+- [active-bugs.md](active-bugs.md)：当前待处理缺陷，只保留仍需修复、澄清或设计决策的问题。
+- [pending-verification.md](pending-verification.md)：已修复但尚未独立复测的问题。
+- `verified-*.md`：已复测通过但尚未关闭的问题，按年份、版本或批次拆分，例如 [verified-2026.md](verified-2026.md)。
+- `archive/closed-*.md`：已关闭问题，按年份、版本或批次归档，例如 [archive/closed-2026.md](archive/closed-2026.md)。
 
 不要把所有缺陷长期堆在同一个文件。缺陷进入新生命周期后，应从上一阶段文件移除，并在新文件中保留来源和流转记录。
 
@@ -46,9 +46,9 @@
 
 ## 流转规则
 
-- 新发现缺陷先进入 `active-bugs.md`。
-- 修复提交、配置变更或明确处理方案完成后，移动到 `pending-verification.md`。
-- 独立复测通过后，移动到对应 `verified-*.md`。
-- 发布完成、风险接受或不再需要跟踪后，移动到对应 `archive/closed-*.md`。
+- 新发现缺陷先进入 [active-bugs.md](active-bugs.md)。
+- 修复提交、配置变更或明确处理方案完成后，移动到 [pending-verification.md](pending-verification.md)。
+- 独立复测通过后，移动到对应 `verified-*.md` 文件。
+- 发布完成、风险接受或不再需要跟踪后，移动到对应 `archive/closed-*.md` 文件。
 - 重复缺陷在关闭记录中注明合并到的主缺陷 ID。
 - 无法复现的问题必须记录复测环境、复测命令和保留的诊断线索。

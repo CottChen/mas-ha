@@ -1,6 +1,6 @@
 # MAS 自主性设计记录
 
-本文记录 MAS 自主性机制的设计、当前系统化实现和后续演进方向。系统定位、角色边界、模型策略和工具分工的权威说明见 `docs/ARCHITECTURE.md`。
+本文记录 MAS 自主性机制的目标设计、当前已接线能力和实验边界。系统定位、角色边界、模型策略和工具分工的权威说明见 [ARCHITECTURE.md](ARCHITECTURE.md)；尚未解决的设计偏差见 [DESIGN_ALIGNMENT_TODO.md](DESIGN_ALIGNMENT_TODO.md)。
 
 ## 自主性边界
 
@@ -144,7 +144,7 @@ MemoryArtifact {
 - Ego：执行前检索历史失败模式、环境约束和推荐操作策略。
 - Superego：评审前检索审计规则、抽样策略和历史风险。
 - Scheduler：根据 `followupJobs`、`decision` 和预算继续调度、取消或裁剪任务。
-- Consolidation：高置信、多次命中的经验才晋升为 `AGENTS.md` 规则、`docs/` 文档或 smoke/test。
+- Consolidation：高置信、多次命中的经验才晋升为 [../AGENTS.md](../AGENTS.md) 规则、[docs/](./) 文档或 smoke/test。
 
 各类任务职责：
 
@@ -155,7 +155,7 @@ MemoryArtifact {
 
 ## 当前自主闭环
 
-当前实现已经形成可审计的自主改进闭环：
+当前实现已经接通可审计的自主改进闭环骨架。任务产物、低熵信号、调度、Dream/Prune 和审计记录已经形成运行路径，但熵评分、策略选择、语义完成判断和经验晋升仍包含实验性启发式，不能据此宣称自主改进质量已经得到验证：
 
 1. 任务结束后，Ego、Superego 和 HA 终验结果被写入 Experience Graph。
 2. MAS 生成低熵信号、EntropyLedger、EvalCandidate 和必要的 `autonomy_jobs`。
@@ -187,7 +187,7 @@ Superego 不能只依赖 Ego 自报结果。MAS 在 Superego 评审前生成 `Au
 
 Superego 本身承担系统审计 Critic/Judge 职责，不再把额外 Critic 作为异常后才追加的默认补丁。主路径是 Superego + AuditPacket + 按需只读工具；是否使用异质模型由 `MAS_SUPEREGO_MODEL` 显式配置决定。HA 在 Superego 之后代表用户做最终交叉验证，AionUI 会话模型选择只影响 HA。
 
-角色异质工具分工和 Tool-MAD 引用见 `docs/ARCHITECTURE.md`。本节只记录 Superego 审计包和自主性机制如何消费审计证据。
+角色异质工具分工和 Tool-MAD 引用见 [ARCHITECTURE.md](ARCHITECTURE.md)。本节只记录 Superego 审计包和自主性机制如何消费审计证据。
 
 当前 `AuditPacket` 包含：
 
@@ -226,9 +226,4 @@ C:\Users\Administrator\custom\mas-ha-orchestration-acp-gitbash.cmd reflect due
 
 该命令只作为兼容入口唤醒已到期的 reflection 类任务；推荐主入口仍是 `mas autonomy daemon` 或 `mas autonomy tick`。未到期任务保持 `scheduled`，已到期任务会写入审计记录并更新 `wakeups` 和状态。
 
-后续演进方向：
-
-- 把到期反思从启发式判断升级为 Superego typed tool。
-- 把 Dream 输出升级为结构化 `DreamGraphPatch`。
-- 增加信息增益评分、边权衰减、节点合并和图复杂度阈值。
-- 允许 Dream 处理完整图切片，但继续保持低权限。
+当前实现与目标设计之间尚未解决的偏差统一维护在 [DESIGN_ALIGNMENT_TODO.md](DESIGN_ALIGNMENT_TODO.md)，不再在本设计文档中重复维护演进清单。

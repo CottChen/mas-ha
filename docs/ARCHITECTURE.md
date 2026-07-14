@@ -1,6 +1,6 @@
 # MAS 系统架构
 
-本文是 MAS 当前架构的权威说明。运行配置见 `docs/AIONUI.md`，提示词维护见 `docs/AGENT_PROMPTS.md`，自主调度细节见 `docs/AUTONOMY.md`，路线图见 `docs/ROADMAP.md`。
+本文是 MAS 当前架构的权威说明。运行配置见 [AIONUI.md](AIONUI.md)，提示词维护见 [AGENT_PROMPTS.md](AGENT_PROMPTS.md)，自主调度细节见 [AUTONOMY.md](AUTONOMY.md)，路线图见 [ROADMAP.md](ROADMAP.md)。
 
 ## 系统定位
 
@@ -13,6 +13,105 @@ MAS 的核心不是多个模型轮流发言，而是让不同角色持有不同�
 - 系统级风险由 Superego 审计。
 - 用户代理终验仍由 HA 完成。
 - 任务后的经验、反思、Dream 和候选晋升由自主性机制处理。
+
+## 理论来源与设计转译
+
+MAS 不是对任一理论的机械复刻，而是把心理结构、反馈控制、信息不确定性、组织协作和异质工具研究转译为可运行的软件架构。引用原文用于固定设计来源；真正约束实现的是原文之后列出的 MAS 设计含义。
+
+### Freud：Id、Ego 与 Superego
+
+Freud 在 *The Ego and the Id* 中写道：
+
+> “The ego represents what may be called reason and common sense, in contrast to the id, which contains the passions.”
+
+原始来源：Sigmund Freud，*The Ego and the Id*，1923，1927 年英译本，https://www.freudedition.net/en/werke/ego-and-id/druckschrift-1。
+
+MAS 借用的是相互作用的心理结构，而不是临床心理学结论：
+
+- Id 对应模型尚未被现实约束筛选的生成势能、联想、欲望和候选路径；它不是独立对外执行角色。
+- Ego 是现实原则下的行动者，把候选路径放进当前任务、工具、权限、成本和外部世界中检验，并承担真实交付责任。
+- Superego 是内化规范、长期价值和自我审查机制，对 Ego 的行动进行约束、证伪和反思，但不能脱离现实证据追求抽象完美。
+- Dream 允许在低权限环境中重组经验、释放固定模式和生成新候选，但不能直接写用户工作区或向用户交付结论。
+
+因此，Ego 和 Superego 不是两个轮流说话的模型，而是同一智能系统中现实行动与规范反思的两个运行面。任何一方失去另一方都会退化：只有 Ego 容易短视和合理化，只有 Superego 容易停滞、苛责和脱离交付。
+
+### 控制论：反馈、稳定与调节
+
+Ashby 转述 Wiener 对控制论的定义：
+
+> “the science of control and communication, in the animal and the machine”
+
+Ashby 进一步提出必要多样性定律：
+
+> “variety can destroy variety.”
+
+原始来源：W. Ross Ashby，*An Introduction to Cybernetics*，1956，第 1/1、11/7 节，https://ashby.info/Ashby-Introduction-to-Cybernetics.pdf；Norbert Wiener，*Cybernetics: Or Control and Communication in the Animal and the Machine*，1948，https://direct.mit.edu/books/oa-monograph/4581/Cybernetics-or-Control-and-Communication-in-the。
+
+MAS 把一次任务视为闭环调节过程，而不是一次性文本生成：用户目标和验收合同定义期望状态，Ego 行动改变环境，工具结果、验证、AuditPacket 和用户反馈构成观测，Superego 与 HA 根据误差决定接受、返工、换路或升级。系统必须通过反馈修正行为，不能只依赖初始计划。
+
+必要多样性意味着，复杂任务产生的扰动越多，调节器就越需要足够的模型、角色、工具、证据通道和策略多样性。异质性不是装饰，也不是无条件增加 agent 数量；它用于覆盖单一模型、单一工具和单一视角无法吸收的问题多样性。
+
+### 信息论：熵、不确定性与信息增益
+
+Shannon 用概率分布定义信息源的不确定性：
+
+> “H = - K Σ pᵢ log pᵢ”
+
+原始来源：Claude E. Shannon，*A Mathematical Theory of Communication*，1948，https://doi.org/10.1002/j.1538-7305.1948.tb00917.x。
+
+MAS 使用“熵”作为工程上的不确定性视角，而不是声称当前评分已经等同于严格的 Shannon entropy：
+
+- Agent 应优先选择最可能降低关键不确定性的下一步观察或行动。
+- 测试、复算、schema、权威来源、用户反馈和生产信号只有在改变可行解释集合时才产生信息增益。
+- 重复同一推理、同一工具和同一失败路径而没有新增证据，不属于自主改进。
+- `EntropyLedger`、evidence score 和 information gain 当前是可审计启发式量，应通过校准和回归数据逐步逼近可靠指标，不能把人为权重伪装成自然定律。
+
+### 组织模型：把 Agent 当作人来组织
+
+MAS 把 Agent 视为具有能力、性格、注意力、经验、工具、权限和责任边界的“人”，而不是无状态函数。系统能力来自组织，而不只来自最强的单个模型。
+
+用户与 MAS 是上级和下属关系：HA 代表整个 MAS 对用户负责。好的下属应站在上级目标和整体利益上思考，在授权范围内自主判断、协调资源并完成结果；只有目标冲突、重大取舍、权限或凭据缺失、不可逆高风险等关键问题才向用户报告和确认。内部角色分歧、普通失败、工具选择和可自动解决的环境问题应由 MAS 内部消化，不能轻易转嫁给用户。
+
+组织化设计要求：
+
+- 责任与权力匹配：执行者有行动工具，审计者有独立证据，最终负责人有验收和升级权。
+- 汇报面向上级价值：报告目标完成度、关键证据、风险和需要决策的事项，不倾倒内部流水账。
+- 授权内自主：框架给出边界、预算和问责机制，不用僵硬 SOP 替代人的判断。
+- 关键问题升级：只有超出授权或需要上级偏好取舍时才请求用户；“我遇到困难”本身不是升级理由。
+- 组织学习：个人经验进入 Experience Graph，经反思、验证和晋升后成为组织能力，而不是停留在单次会话。
+
+### 异质模型、异质工具与 Tool-MAD
+
+Tool-MAD 指出传统多智能体辩论主要依赖模型内部知识或静态文档，并提出：
+
+> “assigning each agent a distinct external tool”
+
+原始来源：Seyeon Jeong、Yeonjun Choi、JongWook Kim、Beakcheol Jang，*Tool-MAD: A Multi-Agent Debate Framework for Fact Verification with Diverse Tool Augmentation and Adaptive Retrieval*，arXiv:2601.04742，2026-01-08，https://arxiv.org/abs/2601.04742。
+
+论文名称是 Tool-MAD；MAS 在此基础上做组织化扩展：异质性可以来自不同模型、角色人格、上下文、工具、数据源、权限和评价标准。目标不是制造表面分歧，而是让不同角色拥有真实不同的观察能力和盲区，并由 HA/Superego 对证据相关性、忠实度和任务目标进行裁决。
+
+### 外部知识：避免闭门造车
+
+ReAct 强调行动让模型能够连接知识库或环境并获取新信息：
+
+> “actions allow it to interface with external sources”
+
+原始来源：Shunyu Yao 等，*ReAct: Synergizing Reasoning and Acting in Language Models*，ICLR 2023，https://arxiv.org/abs/2210.03629。
+
+MAS 把互联网和外部知识视为组织的感知器官，而不是可选装饰。当任务依赖最新信息、第三方协议/版本/论文/标准、公开事实，或遇到很可能已有行业经验的通用难题时，应主动检索并阅读原始来源，复用外部世界已经验证的知识。闭门实现前，应先判断问题是否具有公共性和时效性。
+
+外部信息仍需治理：搜索摘要只是线索，关键结论必须核对原文、记录来源和时间，并与当前工作区证据交叉验证。互联网用于扩大可观察世界和降低不确定性，不能覆盖用户目标、权限边界或确定性审计门禁。
+
+### 工程边界
+
+这些理论提供判断框架，不应退化为术语装饰或写死逻辑：
+
+- 心理学隐喻不能替代明确的角色权限、上下文和状态机。
+- 控制论不能退化为固定次数重试；反馈必须能够改变下一步策略。
+- 信息熵不能退化为未经校准的单一分数；必须保留原始证据和不确定性来源。
+- 异质性不能退化为给同一模型换角色名；应产生真实不同的能力、信息或评价视角。
+- 外部检索不能退化为关键词正则触发；应基于信息时效性、知识缺口、问题公共性和预期信息增益判断。
+- 正则、白名单和启发式只能作为风险信号或有限协议适配，不能承担开放语义理解和最终安全证明。
 
 ## 角色边界
 
@@ -52,13 +151,11 @@ Ego 如果上报 `needs_attention` 或 `blocked`，MAS 不会直接向用户结�
 
 MAS 当前采用角色异质工具分工：
 
-- Ego 负责行动工具，拥有工作区读写和命令执行能力；不直接查询 MAS 记忆、近期活动或外部检索，避免执行层用历史状态扩大任务边界。
+- Ego 负责行动工具，拥有工作区读写、命令执行和按需查询 Experience Graph 历史经验的能力；不查询 MAS 近期活动或外部检索，避免执行层用跨 run 状态或外部信息扩大任务边界。
 - Superego 负责系统审计工具，依赖 AuditPacket、只读工作区检查、MAS 内部运行事实和自动授权只读命令抽样复算。
 - HA 负责用户代理 intake 和验收工具，拥有外部检索工具 `mas_external_search`、外部读取工具 `mas_external_read`、工作区只读工具和自动授权只读 `bash`。路由阶段的本地工具只用于理解用户任务和生成更可靠的合同，不用于提前完成交付。
 
-这个设计借鉴 Tool-MAD 的异质外部工具思想。Tool-MAD 指出，传统 MAD 容易依赖模型内部知识或静态文档；通过为不同 agent 分配不同外部工具，例如 Search API 或 RAG 模块，可以引入多样化证据视角，并提升事实核验鲁棒性。
-
-参考：Seyeon Jeong、Yeonjun Choi、JongWook Kim、Beakcheol Jang，*Tool-MAD: A Multi-Agent Debate Framework for Fact Verification with Diverse Tool Augmentation and Adaptive Retrieval*，arXiv:2601.04742，2026-01-08，https://arxiv.org/abs/2601.04742。
+这个设计借鉴前述 Tool-MAD 的异质外部工具思想，并把异质性扩展到模型、组织角色、权限、上下文和评价视角。
 
 `mas_external_search` / `mas_external_read` 的结果只是候选证据，不能覆盖用户目标、验收合同、当前仓库证据、AuditPacket 或确定性审计门禁。HA 采用外部结果时必须保留来源、检索/读取时间和交叉验证依据。
 
@@ -120,4 +217,4 @@ SQLite 当前保存消息、摘要、运行记录、agent_run、approval、audit
 
 ## 当前边界
 
-当前本地系统化阶段暂未包含 Temporal、PostgreSQL、NATS、对象存储、远程控制面和生产级多租户。相关演进见 `docs/ROADMAP.md`。
+当前本地系统化阶段暂未包含 Temporal、PostgreSQL、NATS、对象存储、远程控制面和生产级多租户。相关演进见 [ROADMAP.md](ROADMAP.md)。
